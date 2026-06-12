@@ -1,8 +1,8 @@
 # 🐾 Diesel Tracker
 
 A phone-friendly app for logging Diesel's behavior **in the moment**, which then
-syncs entries to the shared [Google Sheet tracker](https://docs.google.com/spreadsheets/d/1-N3LGuho6oWl9yF77j5CRe_no-DxaMINI4y90mafHzM/edit)
-so external viewers (trainer, family) can review whenever they like.
+syncs entries to the shared Google Sheet tracker so external viewers (trainer,
+family) can review whenever they like.
 
 ## How it works
 
