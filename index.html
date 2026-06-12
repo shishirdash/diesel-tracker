@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#4f46e5" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Diesel Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🐾 Diesel Tracker</h1>
+    <div class="sync-status" id="syncStatus">
+      <span class="badge" id="pendingBadge" hidden>0</span>
+      <button class="sync-btn" id="syncNowBtn" title="Sync now">⟳</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- LOG SCREEN -->
+    <section id="screen-log" class="screen active">
+      <p class="hint">Tap a behavior to log an in-the-moment observation.</p>
+      <div id="behaviorList"></div>
+
+      <details class="levers">
+        <summary>Levers cheat-sheet</summary>
+        <ul>
+          <li><strong>Spray cheese</strong> — at-home calming (door knocks) · <em>Good</em></li>
+          <li><strong>Beef liver / pupperoni</strong> — ball trades · <em>Meh, needs work</em></li>
+          <li><strong>Cheese sticks</strong> — heel walking / loose leash · <em>Meh</em></li>
+        </ul>
+      </details>
+    </section>
+
+    <!-- HISTORY SCREEN -->
+    <section id="screen-history" class="screen">
+      <div class="history-actions">
+        <button id="exportCsvBtn" class="secondary">Export CSV</button>
+      </div>
+      <ul id="historyList" class="history-list"></ul>
+      <p id="historyEmpty" class="hint" hidden>No entries yet. Log something on the Log tab.</p>
+    </section>
+
+    <!-- SETTINGS SCREEN -->
+    <section id="screen-settings" class="screen">
+      <h2>Sheet sync</h2>
+      <p class="hint">Paste the Apps Script web-app URL and the shared token you set in <code>Code.gs</code>. See the README for one-time setup.</p>
+      <label>Apps Script URL
+        <input type="url" id="scriptUrl" placeholder="https://script.google.com/macros/s/…/exec" />
+      </label>
+      <label>Shared token
+        <input type="text" id="scriptToken" placeholder="same value as TOKEN in Code.gs" />
+      </label>
+      <label>Auto-sync every
+        <select id="autoSyncMinutes">
+          <option value="5">5 minutes</option>
+          <option value="15" selected>15 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="0">Manual only</option>
+        </select>
+      </label>
+      <button id="saveSettingsBtn">Save settings</button>
+      <button id="testSyncBtn" class="secondary">Test connection</button>
+      <p id="settingsMsg" class="hint"></p>
+    </section>
+  </main>
+
+  <!-- LOG ENTRY SHEET -->
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+  <div class="sheet" id="entrySheet" hidden>
+    <h2 id="sheetTitle">Log entry</h2>
+    <p class="hint" id="sheetSubtitle"></p>
+    <div class="severity-row" id="severityRow">
+      <button data-severity="green" class="sev green">Good</button>
+      <button data-severity="yellow" class="sev yellow">Watch</button>
+      <button data-severity="orange" class="sev orange">Issue</button>
+      <button data-severity="red" class="sev red">Incident</button>
+    </div>
+    <textarea id="noteInput" rows="3" placeholder="What happened? (optional)"></textarea>
+    <div class="sheet-actions">
+      <button id="cancelEntryBtn" class="secondary">Cancel</button>
+      <button id="saveEntryBtn" disabled>Save</button>
+    </div>
+  </div>
+
+  <nav class="tabbar">
+    <button data-screen="log" class="tab active">📝 Log</button>
+    <button data-screen="history" class="tab">📋 History</button>
+    <button data-screen="settings" class="tab">⚙️ Settings</button>
+  </nav>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
