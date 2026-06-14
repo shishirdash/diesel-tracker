@@ -290,6 +290,12 @@ button.secondary { background: #e2e8f0; color: var(--text); }
 .bt-cell.red { background: var(--red); }
 .bt-cell.bt-none { background: repeating-linear-gradient(45deg, #f1f5f9, #f1f5f9 3px, #fff 3px, #fff 6px); }
 .bt-cell:not(.bt-none) { cursor: pointer; }
+.bt-gaphead { flex: 0 0 22px; width: 22px; text-align: center; font-size: 0.55rem; color: var(--muted); }
+.bt-gap { flex: 0 0 22px; width: 22px; height: 22px; position: relative; }
+.bt-gap::before {
+  content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px;
+  border-left: 2px dotted #94a3b8;
+}
 
 /* Day marker */
 .daymark {

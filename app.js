@@ -299,7 +299,8 @@ function renderBehaviorGrid(sortedWeeks) {
   const weeks = sortedWeeks.slice(0, 10).reverse();
 
   // Per week: "category|behavior" -> { severity, note } using the worst severity.
-  const perWeek = weeks.map((w) => {
+  const sevByWeek = new Map(); // week-start ms -> Map(key -> {severity, note})
+  for (const w of weeks) {
     const m = new Map();
     for (const e of w.entries) {
       const rank = SEVERITY_RANK[e.severity];
@@ -308,7 +309,18 @@ function renderBehaviorGrid(sortedWeeks) {
       const cur = m.get(k);
       if (!cur || rank > SEVERITY_RANK[cur.severity]) m.set(k, { severity: e.severity, note: e.note || "" });
     }
-    return m;
+    sevByWeek.set(w.start.getTime(), m);
+  }
+
+  // Build the column sequence, inserting a gap marker where weeks aren't
+  // consecutive so the timeline doesn't pretend a 3-month break was one week.
+  const cols = [];
+  weeks.forEach((w, i) => {
+    if (i > 0) {
+      const skipped = Math.round((w.start - weeks[i - 1].start) / (7 * 86400000)) - 1;
+      if (skipped > 0) cols.push({ type: "gap", weeks: skipped });
+    }
+    cols.push({ type: "week", w });
   });
 
   const table = document.createElement("div");
@@ -320,10 +332,16 @@ function renderBehaviorGrid(sortedWeeks) {
   const corner = document.createElement("span");
   corner.className = "bt-label";
   head.appendChild(corner);
-  weeks.forEach((w) => {
+  cols.forEach((col) => {
     const c = document.createElement("span");
-    c.className = "bt-wk";
-    c.textContent = shortWeekLabel(w.start);
+    if (col.type === "gap") {
+      c.className = "bt-gaphead";
+      c.textContent = col.weeks + "w";
+      c.title = col.weeks + " week" + (col.weeks === 1 ? "" : "s") + " with no check-in";
+    } else {
+      c.className = "bt-wk";
+      c.textContent = shortWeekLabel(col.w.start);
+    }
     head.appendChild(c);
   });
   table.appendChild(head);
@@ -341,14 +359,20 @@ function renderBehaviorGrid(sortedWeeks) {
       label.className = "bt-label";
       label.textContent = behavior;
       row.appendChild(label);
-      perWeek.forEach((m, i) => {
+      cols.forEach((col) => {
+        if (col.type === "gap") {
+          const g = document.createElement("span");
+          g.className = "bt-gap";
+          row.appendChild(g);
+          return;
+        }
         const cell = document.createElement("span");
-        const hit = m.get(k);
+        const hit = sevByWeek.get(col.w.start.getTime()).get(k);
         cell.className = "bt-cell" + (hit ? " " + hit.severity : " bt-none");
         if (hit) {
           cell.title = hit.note;
           cell.addEventListener("click", () => {
-            const wk = shortWeekLabel(weeks[i].start);
+            const wk = shortWeekLabel(col.w.start);
             toast(`${behavior} · ${wk}: ${SEVERITY_LABELS[hit.severity]}${hit.note ? " — " + hit.note : ""}`);
           });
         }
