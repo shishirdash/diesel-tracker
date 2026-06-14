@@ -257,8 +257,31 @@ button.secondary { background: #e2e8f0; color: var(--text); }
 
 .week-row { padding: 10px 12px; }
 .week-range { font-weight: 600; font-size: 0.9rem; }
+.week-right { display: flex; align-items: center; gap: 6px; }
 .week-stats { font-size: 0.78rem; color: var(--muted); text-align: right; line-height: 1.4; }
 .week-min { color: var(--green); font-weight: 700; }
+.ovr { color: var(--indigo); font-weight: 600; }
+.wk-edit {
+  background: none; color: var(--muted);
+  padding: 4px 6px; font-size: 0.95rem;
+}
+
+/* Day marker */
+.daymark {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  background: var(--card); border: 1px solid #e2e8f0; border-radius: var(--radius);
+  padding: 12px; margin-bottom: 6px;
+}
+.daymark-label { margin-bottom: 0; flex: 1; min-width: 130px; }
+.daymark-btns { display: flex; gap: 8px; }
+.daymark-btns button { padding: 10px 12px; }
+
+/* History row actions */
+.item-actions { display: flex; align-items: flex-start; gap: 2px; }
+.edit-btn {
+  background: none; color: var(--muted);
+  padding: 4px 8px; font-size: 1rem;
+}
 
 /* Tab bar */
 .tabbar {

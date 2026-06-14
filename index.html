@@ -54,6 +54,16 @@
         <div class="insight-sub" id="reactivityAvg"></div>
       </div>
 
+      <div class="daymark">
+        <label class="daymark-label">Mark a day
+          <input type="date" id="dayMarkDate" />
+        </label>
+        <div class="daymark-btns">
+          <button id="markCalmBtn" class="secondary">Calm day</button>
+          <button id="markIssueBtn" class="secondary">Reactivity issue</button>
+        </div>
+      </div>
+
       <h2 class="trend-h">This week by behavior</h2>
       <p class="hint" id="weekRange"></p>
       <div id="weekSummary"></div>
@@ -102,6 +112,9 @@
       <button data-severity="orange" class="sev orange">Issue</button>
       <button data-severity="red" class="sev red">Incident</button>
     </div>
+    <label>When
+      <input type="datetime-local" id="entryWhen" />
+    </label>
     <textarea id="noteInput" rows="3" placeholder="What happened? (optional)"></textarea>
     <div class="sheet-actions">
       <button id="cancelEntryBtn" class="secondary">Cancel</button>

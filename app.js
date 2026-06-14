@@ -20,10 +20,14 @@ const store = {
   set entries(v) { localStorage.setItem("entries", JSON.stringify(v)); },
   get settings() { return JSON.parse(localStorage.getItem("settings") || "{}"); },
   set settings(v) { localStorage.setItem("settings", JSON.stringify(v)); },
+  // Manual per-week overrides of the minimal-reactivity-days number, keyed by week-start ms.
+  get weekOverrides() { return JSON.parse(localStorage.getItem("weekOverrides") || "{}"); },
+  set weekOverrides(v) { localStorage.setItem("weekOverrides", JSON.stringify(v)); },
 };
 
 let currentSelection = null; // { category, behavior }
 let currentSeverity = null;
+let editingId = null; // id of the entry being edited, or null for a new entry
 let autoSyncTimer = null;
 
 const $ = (id) => document.getElementById(id);
@@ -53,14 +57,38 @@ function renderBehaviorList() {
 }
 
 /* ---------- UI: entry sheet ---------- */
+// Format a date as the value a <input type="datetime-local"> expects (local time).
+function toLocalInput(ts) {
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function openSheet(category, behavior) {
+  editingId = null;
   currentSelection = { category, behavior };
   currentSeverity = null;
   $("sheetTitle").textContent = behavior;
   $("sheetSubtitle").textContent = category;
   $("noteInput").value = "";
+  $("entryWhen").value = toLocalInput(Date.now());
   document.querySelectorAll(".sev").forEach((b) => b.classList.remove("selected"));
   $("saveEntryBtn").disabled = true;
+  $("entrySheet").hidden = false;
+  $("sheetBackdrop").hidden = false;
+}
+
+function openEditSheet(entry) {
+  editingId = entry.id;
+  currentSelection = { category: entry.category, behavior: entry.behavior };
+  currentSeverity = entry.severity;
+  $("sheetTitle").textContent = "Edit: " + entry.behavior;
+  $("sheetSubtitle").textContent = entry.category;
+  $("noteInput").value = entry.note || "";
+  $("entryWhen").value = toLocalInput(entry.ts);
+  document.querySelectorAll(".sev").forEach((b) =>
+    b.classList.toggle("selected", b.dataset.severity === entry.severity));
+  $("saveEntryBtn").disabled = false;
   $("entrySheet").hidden = false;
   $("sheetBackdrop").hidden = false;
 }
@@ -69,22 +97,55 @@ function closeSheet() {
   $("entrySheet").hidden = true;
   $("sheetBackdrop").hidden = true;
   currentSelection = null;
+  editingId = null;
 }
 
 function saveEntry() {
   if (!currentSelection || !currentSeverity) return;
+  const whenVal = $("entryWhen").value;
+  const ts = whenVal ? new Date(whenVal).toISOString() : new Date().toISOString();
+  const note = $("noteInput").value.trim();
+  if (editingId) {
+    store.entries = store.entries.map((e) =>
+      e.id === editingId ? { ...e, severity: currentSeverity, note, ts, synced: false } : e);
+    toast("Entry updated.");
+  } else {
+    const entry = {
+      id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+      ts,
+      category: currentSelection.category,
+      behavior: currentSelection.behavior,
+      severity: currentSeverity,
+      note,
+      synced: false,
+    };
+    store.entries = [entry, ...store.entries];
+    toast(`Logged: ${entry.behavior} (${SEVERITY_LABELS[entry.severity]})`);
+  }
+  closeSheet();
+  refreshPendingBadge();
+  renderHistory();
+  renderInsights();
+  syncNow({ silent: true });
+}
+
+// Quick day-level marker (no behavior picking) for backfilling recall gaps.
+function markDay(severity) {
+  const dv = $("dayMarkDate").value;
+  if (!dv) { toast("Pick a date first."); return; }
+  const [y, m, d] = dv.split("-").map(Number);
+  const ts = new Date(y, m - 1, d, 12, 0, 0).toISOString();
   const entry = {
     id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-    ts: new Date().toISOString(),
-    category: currentSelection.category,
-    behavior: currentSelection.behavior,
-    severity: currentSeverity,
-    note: $("noteInput").value.trim(),
+    ts,
+    category: REACTIVITY_CATEGORY,
+    behavior: "Day marker",
+    severity,
+    note: "",
     synced: false,
   };
   store.entries = [entry, ...store.entries];
-  closeSheet();
-  toast(`Logged: ${entry.behavior} (${SEVERITY_LABELS[entry.severity]})`);
+  toast(severity === "orange" ? "Marked a reactivity-issue day." : "Marked a calm day.");
   refreshPendingBadge();
   renderHistory();
   renderInsights();
@@ -94,7 +155,7 @@ function saveEntry() {
 /* ---------- UI: history ---------- */
 function renderHistory() {
   const list = $("historyList");
-  const entries = store.entries;
+  const entries = [...store.entries].sort((a, b) => new Date(b.ts) - new Date(a.ts));
   list.innerHTML = "";
   $("historyEmpty").hidden = entries.length > 0;
   for (const e of entries) {
@@ -110,6 +171,13 @@ function renderHistory() {
       (e.synced ? "" : ` · <span class="unsynced">not synced</span>`) +
       `</div>` +
       (e.note ? `<div class="note">${escapeHtml(e.note)}</div>` : "");
+    const actions = document.createElement("div");
+    actions.className = "item-actions";
+    const edit = document.createElement("button");
+    edit.className = "edit-btn";
+    edit.textContent = "✎";
+    edit.title = "Edit";
+    edit.addEventListener("click", () => openEditSheet(e));
     const del = document.createElement("button");
     del.className = "delete-btn";
     del.textContent = "✕";
@@ -120,8 +188,10 @@ function renderHistory() {
       renderInsights();
       refreshPendingBadge();
     });
+    actions.appendChild(edit);
+    actions.appendChild(del);
     li.appendChild(left);
-    li.appendChild(del);
+    li.appendChild(actions);
     list.appendChild(li);
   }
 }
@@ -169,25 +239,37 @@ function fmtWeekRange(weekStart) {
   return `${weekStart.toLocaleDateString([], opts)} – ${end.toLocaleDateString([], opts)}`;
 }
 
-// Per-week rollup: tracked days, minimal-reactivity days, totals, worst-by-behavior.
-function weekStats(entries) {
-  const days = new Map(); // dayKey -> { reactIssue: bool }
+// Days elapsed in a week so far: full 7 for past weeks, Mon→today for the current week.
+function weekSpanDays(weekStart) {
+  const currentWeekStart = startOfWeek(Date.now());
+  if (weekStart.getTime() !== currentWeekStart.getTime()) return 7;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.floor((today - weekStart) / 86400000) + 1;
+}
+
+// Per-week rollup. Minimal-reactivity days = span days minus days with a logged
+// reactivity Issue/Incident — robust to not logging every uneventful day.
+function weekStats(entries, weekStart) {
+  const issueDays = new Set();
+  const trackedDays = new Set();
   let reactIssues = 0;
   for (const e of entries) {
     const k = dayKey(e.ts);
-    if (!days.has(k)) days.set(k, { reactIssue: false });
+    trackedDays.add(k);
     if (e.category === REACTIVITY_CATEGORY && SEVERITY_RANK[e.severity] >= REACTIVITY_ISSUE_RANK) {
-      days.get(k).reactIssue = true;
+      issueDays.add(k);
       reactIssues++;
     }
   }
-  let minimal = 0;
-  days.forEach((d) => { if (!d.reactIssue) minimal++; });
-  return { tracked: days.size, minimal, reactIssues, total: entries.length };
+  const span = weekSpanDays(weekStart);
+  const minimal = Math.max(0, span - issueDays.size);
+  return { span, issueDays: issueDays.size, minimal, reactIssues, tracked: trackedDays.size, total: entries.length };
 }
 
 function renderInsights() {
   const entries = store.entries;
+  const overrides = store.weekOverrides;
   $("trendsEmpty").hidden = entries.length > 0;
 
   // Group entries by ISO-ish week (keyed by week-start timestamp).
@@ -199,26 +281,34 @@ function renderInsights() {
     weeks.get(key).entries.push(e);
   }
   const sortedWeeks = [...weeks.values()].sort((a, b) => b.start - a.start);
+  const minimalFor = (w) => {
+    const key = String(w.start.getTime());
+    const s = weekStats(w.entries, w.start);
+    return key in overrides ? overrides[key] : s.minimal;
+  };
 
   // --- Reactivity estimate card ---
   const thisWeekStart = startOfWeek(Date.now());
+  const thisWeekKey = String(thisWeekStart.getTime());
   const thisWeek = weeks.get(thisWeekStart.getTime());
-  const tw = thisWeek ? weekStats(thisWeek.entries) : { tracked: 0, minimal: 0 };
-  $("reactivityThisWeek").textContent = String(tw.minimal);
+  const tw = thisWeek
+    ? weekStats(thisWeek.entries, thisWeekStart)
+    : weekStats([], thisWeekStart);
+  const twMinimal = thisWeekKey in overrides ? overrides[thisWeekKey] : tw.minimal;
+  $("reactivityThisWeek").textContent = String(twMinimal);
 
   const avgEl = $("reactivityAvg");
-  if (sortedWeeks.length === 0) {
-    avgEl.textContent = "Log a few days to start seeing the weekly pattern.";
+  const completeWeeks = sortedWeeks.filter((w) => w.start.getTime() !== thisWeekStart.getTime());
+  const subNote = `${tw.issueDays} issue day${tw.issueDays === 1 ? "" : "s"} of ${tw.span} so far this week`;
+  if (completeWeeks.length === 0) {
+    avgEl.innerHTML = `First week in progress — a weekly average appears once a full week is logged.` +
+      `<br><span class="hint">${subNote}</span>`;
   } else {
-    const totalMinimal = sortedWeeks.reduce((s, w) => s + weekStats(w.entries).minimal, 0);
-    const avg = totalMinimal / sortedWeeks.length;
-    const trackedNote = tw.tracked
-      ? `${tw.minimal} of ${tw.tracked} tracked day${tw.tracked === 1 ? "" : "s"} this week`
-      : "no days tracked yet this week";
+    const avg = completeWeeks.reduce((s, w) => s + minimalFor(w), 0) / completeWeeks.length;
     avgEl.innerHTML =
-      `<strong>≈ ${avg.toFixed(1)} day${avg.toFixed(1) === "1.0" ? "" : "s"}/week</strong> ` +
-      `across ${sortedWeeks.length} week${sortedWeeks.length === 1 ? "" : "s"} of data` +
-      `<br><span class="hint">${trackedNote}</span>`;
+      `<strong>≈ ${avg.toFixed(1)} days/week</strong> across ` +
+      `${completeWeeks.length} complete week${completeWeeks.length === 1 ? "" : "s"}` +
+      `<br><span class="hint">${subNote}</span>`;
   }
 
   // --- This week, by behavior (mirrors the sheet's weekly summary) ---
@@ -267,15 +357,54 @@ function renderInsights() {
     hist.innerHTML = `<p class="hint">No weeks to summarize yet.</p>`;
   } else {
     for (const w of sortedWeeks.slice(0, 8)) {
-      const s = weekStats(w.entries);
+      const key = String(w.start.getTime());
+      const s = weekStats(w.entries, w.start);
+      const overridden = key in overrides;
+      const shownMin = overridden ? overrides[key] : s.minimal;
       const row = document.createElement("div");
       row.className = "week-row";
-      row.innerHTML =
-        `<span class="week-range">${fmtWeekRange(w.start)}</span>` +
-        `<span class="week-stats">` +
-        `<span class="week-min">${s.minimal}/${s.tracked}</span> min-reactivity days` +
-        `<br>${s.total} log${s.total === 1 ? "" : "s"} · ${s.reactIssues} reactivity issue${s.reactIssues === 1 ? "" : "s"}` +
-        `</span>`;
+
+      const stats = document.createElement("span");
+      stats.className = "week-stats";
+      stats.innerHTML =
+        `<span class="week-min">${shownMin}/${s.span}</span> min-reactivity days` +
+        (overridden ? ` <span class="ovr">(edited)</span>` : "") +
+        `<br>${s.total} log${s.total === 1 ? "" : "s"} · ${s.issueDays} issue day${s.issueDays === 1 ? "" : "s"}`;
+
+      const edit = document.createElement("button");
+      edit.className = "wk-edit";
+      edit.textContent = "✎";
+      edit.title = "Override this week's number";
+      edit.addEventListener("click", () => {
+        const cur = overridden ? overrides[key] : "";
+        const input = prompt(
+          `Minimal-reactivity days for ${fmtWeekRange(w.start)}\n` +
+          `(calculated: ${s.minimal}; leave blank to use the calculated value)`,
+          String(cur));
+        if (input === null) return;
+        const ov = store.weekOverrides;
+        if (input.trim() === "") {
+          delete ov[key];
+        } else {
+          const n = Number(input);
+          if (!Number.isFinite(n) || n < 0) { toast("Enter a number ≥ 0."); return; }
+          ov[key] = n;
+        }
+        store.weekOverrides = ov;
+        renderInsights();
+      });
+
+      const left = document.createElement("span");
+      left.className = "week-range";
+      left.textContent = fmtWeekRange(w.start);
+
+      const right = document.createElement("span");
+      right.className = "week-right";
+      right.appendChild(stats);
+      right.appendChild(edit);
+
+      row.appendChild(left);
+      row.appendChild(right);
       hist.appendChild(row);
     }
   }
@@ -414,6 +543,10 @@ function init() {
       b.classList.add("selected");
       $("saveEntryBtn").disabled = false;
     }));
+
+  $("dayMarkDate").value = toLocalInput(Date.now()).slice(0, 10);
+  $("markCalmBtn").addEventListener("click", () => markDay("green"));
+  $("markIssueBtn").addEventListener("click", () => markDay("orange"));
 
   $("saveEntryBtn").addEventListener("click", saveEntry);
   $("cancelEntryBtn").addEventListener("click", closeSheet);
