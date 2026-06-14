@@ -69,6 +69,7 @@ function handlePush(body) {
   if (observations.length === 0) return jsonResponse({ ok: true, applied: 0, skipped: 0 });
 
   var sheet = getObsSheet();
+  normalizeSheet(sheet);
   var index = buildIdIndex(sheet); // id -> { row, updatedAt }
   var applied = 0, skipped = 0;
 
@@ -96,6 +97,7 @@ function handlePush(body) {
 
 function handlePull(body) {
   var sheet = getObsSheet();
+  normalizeSheet(sheet);
   var since = body.since ? new Date(body.since) : null;
   var rows = readAllObs(sheet).filter(function (r) {
     return !since || new Date(r.updatedAt || 0) > since;
@@ -182,6 +184,57 @@ function handleImport(body) {
 }
 
 /* ============================ sheet helpers ============================ */
+
+// Make hand-typed rows first-class: any row with content but no id/updatedAt
+// gets stamped so the app can see and order it. Called before every read/write.
+function normalizeSheet(sheet) {
+  var last = sheet.getLastRow();
+  if (last < 2) return;
+  var range = sheet.getRange(2, 1, last - 1, COLS.length);
+  var vals = range.getValues();
+  var now = new Date().toISOString();
+  var changed = false;
+  for (var i = 0; i < vals.length; i++) {
+    var row = vals[i];
+    var hasContent = String(row[COL.category - 1]).trim() || String(row[COL.behavior - 1]).trim() || String(row[COL.note - 1]).trim();
+    if (!hasContent) continue;
+    if (String(row[COL.id - 1]).trim() === "") {
+      row[COL.id - 1] = "manual-" + Date.now() + "-" + Math.floor(Math.random() * 1e6) + "-" + i;
+      if (String(row[COL.updatedAt - 1]).trim() === "") row[COL.updatedAt - 1] = now;
+      changed = true;
+    }
+    if (String(row[COL.updatedAt - 1]).trim() === "") { row[COL.updatedAt - 1] = now; changed = true; }
+    if (String(row[COL.week - 1]).trim() === "" && row[COL.timestamp - 1]) {
+      row[COL.week - 1] = weekStartKey(new Date(row[COL.timestamp - 1]));
+      changed = true;
+    }
+    if (String(row[COL.source - 1]).trim() === "") { row[COL.source - 1] = "sheet"; changed = true; }
+  }
+  if (changed) range.setValues(vals);
+}
+
+// Simple trigger: stamp updatedAt (and backfill id/week) whenever someone edits
+// the Observations tab, so edits to existing rows also propagate to the app.
+function onEdit(e) {
+  try {
+    var sh = e.range.getSheet();
+    if (sh.getName() !== OBS_SHEET_NAME) return;
+    var startRow = e.range.getRow();
+    var numRows = e.range.getNumRows();
+    var now = new Date().toISOString();
+    for (var r = startRow; r < startRow + numRows; r++) {
+      if (r < 2) continue;
+      sh.getRange(r, COL.updatedAt).setValue(now);
+      if (String(sh.getRange(r, COL.id).getValue()).trim() === "") {
+        sh.getRange(r, COL.id).setValue("manual-" + Date.now() + "-" + Math.floor(Math.random() * 1e6));
+      }
+      var ts = sh.getRange(r, COL.timestamp).getValue();
+      if (String(sh.getRange(r, COL.week).getValue()).trim() === "" && ts) {
+        sh.getRange(r, COL.week).setValue(weekStartKey(new Date(ts)));
+      }
+    }
+  } catch (err) { /* simple triggers must not throw */ }
+}
 
 function getObsSheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();

@@ -282,6 +282,84 @@ function weekStats(entries, weekStart) {
   return { span, issueDays: issueDays.size, minimal, reactIssues, tracked: trackedDays.size, total: entries.length };
 }
 
+// Short week label like "9 Jun" from a week-start Date.
+function shortWeekLabel(weekStart) {
+  return weekStart.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+// Behavior × week grid: for each behavior, its worst severity per recent week.
+function renderBehaviorGrid(sortedWeeks) {
+  const grid = $("behaviorGrid");
+  grid.innerHTML = "";
+  if (sortedWeeks.length === 0) {
+    grid.innerHTML = `<p class="hint">No weeks to show yet.</p>`;
+    return;
+  }
+  // Oldest → newest, last 10 weeks, so reading left→right matches the sheet.
+  const weeks = sortedWeeks.slice(0, 10).reverse();
+
+  // Per week: "category|behavior" -> { severity, note } using the worst severity.
+  const perWeek = weeks.map((w) => {
+    const m = new Map();
+    for (const e of w.entries) {
+      const rank = SEVERITY_RANK[e.severity];
+      if (rank === undefined) continue;
+      const k = e.category + "|" + e.behavior;
+      const cur = m.get(k);
+      if (!cur || rank > SEVERITY_RANK[cur.severity]) m.set(k, { severity: e.severity, note: e.note || "" });
+    }
+    return m;
+  });
+
+  const table = document.createElement("div");
+  table.className = "bt-table";
+
+  // Header row.
+  const head = document.createElement("div");
+  head.className = "bt-row bt-head";
+  const corner = document.createElement("span");
+  corner.className = "bt-label";
+  head.appendChild(corner);
+  weeks.forEach((w) => {
+    const c = document.createElement("span");
+    c.className = "bt-wk";
+    c.textContent = shortWeekLabel(w.start);
+    head.appendChild(c);
+  });
+  table.appendChild(head);
+
+  for (const group of TAXONOMY) {
+    const cat = document.createElement("div");
+    cat.className = "bt-cat";
+    cat.textContent = group.category;
+    table.appendChild(cat);
+    for (const behavior of group.behaviors) {
+      const k = group.category + "|" + behavior;
+      const row = document.createElement("div");
+      row.className = "bt-row";
+      const label = document.createElement("span");
+      label.className = "bt-label";
+      label.textContent = behavior;
+      row.appendChild(label);
+      perWeek.forEach((m, i) => {
+        const cell = document.createElement("span");
+        const hit = m.get(k);
+        cell.className = "bt-cell" + (hit ? " " + hit.severity : " bt-none");
+        if (hit) {
+          cell.title = hit.note;
+          cell.addEventListener("click", () => {
+            const wk = shortWeekLabel(weeks[i].start);
+            toast(`${behavior} · ${wk}: ${SEVERITY_LABELS[hit.severity]}${hit.note ? " — " + hit.note : ""}`);
+          });
+        }
+        row.appendChild(cell);
+      });
+      table.appendChild(row);
+    }
+  }
+  grid.appendChild(table);
+}
+
 function renderInsights() {
   const entries = activeEntries();
   const overrides = store.weekOverrides;
@@ -325,6 +403,9 @@ function renderInsights() {
       `${completeWeeks.length} complete week${completeWeeks.length === 1 ? "" : "s"}` +
       `<br><span class="hint">${subNote}</span>`;
   }
+
+  // --- Behavior × week severity grid (the sheet's form, in spirit) ---
+  renderBehaviorGrid(sortedWeeks);
 
   // --- This week, by behavior (mirrors the sheet's weekly summary) ---
   const weekSummary = $("weekSummary");

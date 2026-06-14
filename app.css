@@ -266,6 +266,31 @@ button.secondary { background: #e2e8f0; color: var(--text); }
   padding: 4px 6px; font-size: 0.95rem;
 }
 
+/* Behavior × week grid */
+.bt-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
+.bt-table { display: inline-block; min-width: 100%; }
+.bt-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+.bt-cat {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin: 10px 0 4px;
+}
+.bt-label {
+  flex: 0 0 104px; width: 104px; font-size: 0.8rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  position: sticky; left: 0; background: var(--bg); z-index: 1;
+}
+.bt-wk { flex: 0 0 26px; width: 26px; text-align: center; font-size: 0.62rem; color: var(--muted); line-height: 1.1; }
+.bt-cell {
+  flex: 0 0 26px; width: 26px; height: 22px; border-radius: 4px;
+  border: 1px solid #e2e8f0; cursor: default;
+}
+.bt-cell.green { background: var(--green); }
+.bt-cell.yellow { background: var(--yellow); }
+.bt-cell.orange { background: var(--orange); }
+.bt-cell.red { background: var(--red); }
+.bt-cell.bt-none { background: repeating-linear-gradient(45deg, #f1f5f9, #f1f5f9 3px, #fff 3px, #fff 6px); }
+.bt-cell:not(.bt-none) { cursor: pointer; }
+
 /* Day marker */
 .daymark {
   display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
