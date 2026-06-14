@@ -247,10 +247,16 @@ function generateWeeklyDrafts(byBehavior, weekStart) {
     "(Good/Watch/Issue/Incident) and a note.\n\n" +
     "For each behavior, write a concise 1-2 sentence summary in the reflective first-person voice " +
     "the owner uses (e.g. \"better this week, no incidents; still iffy on...\"), and assign the " +
-    "week's overall severity as one of: green (Good), yellow (Watch), orange (Issue), red (Incident). " +
+    "week's overall severity. Use this mapping strictly:\n" +
+    "- green: no real concerns this week; calm / all good.\n" +
+    "- yellow: minor, inconsistent, or worth watching; keeping an eye on it.\n" +
+    "- orange: a genuine recurring issue or problem behavior (this is 'Issue').\n" +
+    "- red: ONLY for an actual incident — a bite, snap-with-contact, fight, or safety event ('Incident'). " +
+    "Do NOT use red for an ordinary issue, even a persistent one.\n" +
+    "- none: the behavior was not actually tested or observed this week (e.g. 'untested'). Leave it uncolored.\n" +
     "Base severity on the week as a whole, weighting Issue/Incident days heavily.\n\n" +
     "Return ONLY a JSON object mapping each behavior name exactly as given to " +
-    "{\"severity\": \"green|yellow|orange|red\", \"summary\": \"...\"}. No prose, no code fences.\n\n" +
+    "{\"severity\": \"green|yellow|orange|red|none\", \"summary\": \"...\"}. No prose, no code fences.\n\n" +
     "Week of " + dateKey(weekStart) + "\n\n" + lines.join("\n");
 
   var text = callClaude(prompt);
@@ -292,12 +298,25 @@ function callClaude(prompt) {
     .map(function (b) { return b.text; }).join("");
 }
 
-// Write the draft as a brand-new rightmost column; never overwrites existing cells.
+// Write the week's draft column. Reuses the column for this week if one already
+// exists (idempotent re-runs); otherwise appends a new rightmost column. Colors
+// are sampled from the grid's own palette so the draft matches existing cells.
 function writeDraftColumn(grid, weekStart, drafts) {
   var loc = locateGrid(grid);
   if (!loc) throw new Error("Could not locate the grid's behavior rows.");
-  var col = grid.getLastColumn() + 1; // first empty column after all content
   var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+  var label = Utilities.formatDate(weekEnd, Session.getScriptTimeZone(), "dd/MM/yyyy");
+
+  // Find an existing column with this week's header; else append after all content.
+  var lastCol = grid.getLastColumn();
+  var headerVals = grid.getRange(loc.headerRow + 1, 1, 1, lastCol).getValues()[0];
+  var col = -1;
+  for (var i = 0; i < headerVals.length; i++) {
+    var hv = headerVals[i];
+    var hs = (hv instanceof Date) ? Utilities.formatDate(hv, Session.getScriptTimeZone(), "dd/MM/yyyy") : String(hv).trim();
+    if (hs === label) { col = i + 1; break; }
+  }
+  if (col < 0) col = lastCol + 1;
 
   // Remember which column is the live draft so the onEdit writeback watches
   // only it — never the older hand-authored columns.
@@ -307,9 +326,8 @@ function writeDraftColumn(grid, weekStart, drafts) {
     DRAFT_WEEK: weekStart.toISOString(),
   }, false);
 
-  grid.getRange(loc.headerRow + 1, col)
-    .setValue(Utilities.formatDate(weekEnd, Session.getScriptTimeZone(), "dd/MM/yyyy"))
-    .setFontWeight("bold");
+  var palette = sampleGridPalette(grid, col);
+  grid.getRange(loc.headerRow + 1, col).setValue(label).setFontWeight("bold");
 
   var written = 0;
   Object.keys(drafts).forEach(function (beh) {
@@ -318,10 +336,35 @@ function writeDraftColumn(grid, weekStart, drafts) {
     var d = drafts[beh];
     var cell = grid.getRange(rowIdx + 1, col);
     cell.setValue(d.summary).setWrap(true);
-    if (d.severity && SEVERITY_COLOR[d.severity]) cell.setBackground(SEVERITY_COLOR[d.severity]);
+    cell.setBackground(d.severity && palette[d.severity] ? palette[d.severity] : null);
     written++;
   });
   return written;
+}
+
+// Sample the grid's most-common exact fill per severity (skipping skipCol), so a
+// drafted column matches the existing palette instead of a hardcoded one.
+function sampleGridPalette(grid, skipCol) {
+  var bg = grid.getDataRange().getBackgrounds();
+  var counts = { green: {}, yellow: {}, orange: {}, red: {} };
+  for (var r = 0; r < bg.length; r++) {
+    for (var c = 0; c < bg[r].length; c++) {
+      if (skipCol && c + 1 === skipCol) continue;
+      var sev = hexToSeverity(bg[r][c]);
+      if (!sev) continue;
+      var hex = bg[r][c];
+      counts[sev][hex] = (counts[sev][hex] || 0) + 1;
+    }
+  }
+  var palette = {};
+  ["green", "yellow", "orange", "red"].forEach(function (sev) {
+    var best = null, bestN = 0;
+    for (var hex in counts[sev]) {
+      if (counts[sev][hex] > bestN) { bestN = counts[sev][hex]; best = hex; }
+    }
+    palette[sev] = best || SEVERITY_COLOR[sev];
+  });
+  return palette;
 }
 
 // Find the date header row and map each behavior label (lowercased) to its row index.
