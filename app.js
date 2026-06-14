@@ -680,6 +680,20 @@ async function syncNow({ silent = false } = {}) {
   }
 }
 
+async function closeOutWeek() {
+  const { scriptUrl, scriptToken } = store.settings;
+  const msg = $("closeWeekMsg");
+  if (!scriptUrl) { msg.textContent = "Connect the sheet in Settings first."; return; }
+  msg.textContent = "Drafting this week's column from the logs…";
+  const weekStart = startOfWeek(Date.now()).toISOString();
+  try {
+    const data = await postJson(scriptUrl, { token: scriptToken || "", action: "weeklyDraft", weekStart });
+    msg.textContent = `Drafted ${data.written} behaviors into a new Psych column (week of ${data.week}). Review and edit it in the sheet.`;
+  } catch (err) {
+    msg.textContent = `Draft failed: ${err.message}`;
+  }
+}
+
 async function importHistory() {
   const { scriptUrl, scriptToken } = store.settings;
   const msg = $("importMsg");
@@ -792,6 +806,7 @@ function init() {
   $("dayMarkDate").value = toLocalInput(Date.now()).slice(0, 10);
   $("markCalmBtn").addEventListener("click", () => markDay("green"));
   $("markIssueBtn").addEventListener("click", () => markDay("orange"));
+  $("closeWeekBtn").addEventListener("click", closeOutWeek);
 
   $("saveEntryBtn").addEventListener("click", saveEntry);
   $("cancelEntryBtn").addEventListener("click", closeSheet);

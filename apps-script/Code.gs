@@ -50,10 +50,11 @@ function doPost(e) {
     var body = JSON.parse(e.postData.contents);
     if (TOKEN && body.token !== TOKEN) return jsonResponse({ ok: false, error: "Invalid token" });
     switch (body.action || "push") {
-      case "push":   return handlePush(body);
-      case "pull":   return handlePull(body);
-      case "import": return handleImport(body);
-      default:       return jsonResponse({ ok: false, error: "Unknown action: " + body.action });
+      case "push":        return handlePush(body);
+      case "pull":        return handlePull(body);
+      case "import":      return handleImport(body);
+      case "weeklyDraft": return handleWeeklyDraft(body);
+      default:            return jsonResponse({ ok: false, error: "Unknown action: " + body.action });
     }
   } catch (err) {
     return jsonResponse({ ok: false, error: String(err) });
@@ -181,6 +182,173 @@ function handleImport(body) {
     inserted++;
   });
   return jsonResponse({ ok: true, parsed: observations.length, inserted: inserted, weeks: weekDates });
+}
+
+/* ============================ weekly draft (LLM) ============================ */
+
+// Monday-based start (local midnight) of the week containing `d`.
+function mondayOf(d) {
+  var x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  var dow = (x.getDay() + 6) % 7;
+  x.setDate(x.getDate() - dow);
+  return x;
+}
+
+// Pre-fill a NEW (rightmost) column in the grid for one week: an LLM-written
+// summary per behavior + a suggested severity color, derived from that week's
+// Observations. Never touches existing columns.
+function handleWeeklyDraft(body) {
+  var weekStart = body.weekStart ? mondayOf(new Date(body.weekStart)) : mondayOf(new Date());
+  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
+
+  // Gather this week's observations, grouped by behavior label.
+  var rows = readAllObs(getObsSheet()).filter(function (o) {
+    if (o.deleted) return false;
+    var t = new Date(o.ts);
+    return t >= weekStart && t < weekEnd && String(o.behavior).trim();
+  });
+  if (rows.length === 0) {
+    return jsonResponse({ ok: false, error: "No observations logged for the week of " + dateKey(weekStart) });
+  }
+  var byBehavior = {};
+  rows.forEach(function (o) {
+    var key = String(o.behavior).trim();
+    if (!byBehavior[key]) byBehavior[key] = { category: o.category, notes: [] };
+    byBehavior[key].notes.push({
+      date: Utilities.formatDate(new Date(o.ts), Session.getScriptTimeZone(), "EEE dd/MM"),
+      severity: SEVERITY_LABEL[o.severity] || o.severity || "—",
+      note: o.note || "",
+    });
+  });
+
+  var drafts = generateWeeklyDrafts(byBehavior, weekStart); // { behavior: {severity, summary} }
+
+  var grid = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(body.gridSheet || GRID_SHEET_NAME);
+  if (!grid) return jsonResponse({ ok: false, error: "Grid sheet not found" });
+  var written = writeDraftColumn(grid, weekStart, drafts);
+
+  return jsonResponse({ ok: true, week: dateKey(weekStart), drafted: Object.keys(drafts).length, written: written, drafts: drafts });
+}
+
+// One Claude call for the whole week; returns { behavior: {severity, summary} }.
+function generateWeeklyDrafts(byBehavior, weekStart) {
+  var lines = [];
+  Object.keys(byBehavior).forEach(function (beh) {
+    lines.push("## " + beh);
+    byBehavior[beh].notes.forEach(function (n) {
+      lines.push("- [" + n.severity + "] " + n.date + ": " + (n.note || "(no note)"));
+    });
+  });
+
+  var prompt =
+    "You are helping summarize a dog's weekly behavior-training log. Below are this week's " +
+    "in-the-moment observations, grouped by behavior. Each line shows the logged severity " +
+    "(Good/Watch/Issue/Incident) and a note.\n\n" +
+    "For each behavior, write a concise 1-2 sentence summary in the reflective first-person voice " +
+    "the owner uses (e.g. \"better this week, no incidents; still iffy on...\"), and assign the " +
+    "week's overall severity as one of: green (Good), yellow (Watch), orange (Issue), red (Incident). " +
+    "Base severity on the week as a whole, weighting Issue/Incident days heavily.\n\n" +
+    "Return ONLY a JSON object mapping each behavior name exactly as given to " +
+    "{\"severity\": \"green|yellow|orange|red\", \"summary\": \"...\"}. No prose, no code fences.\n\n" +
+    "Week of " + dateKey(weekStart) + "\n\n" + lines.join("\n");
+
+  var text = callClaude(prompt);
+  // Strip accidental code fences before parsing.
+  text = text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  var parsed = JSON.parse(text);
+  var out = {};
+  Object.keys(parsed).forEach(function (beh) {
+    var v = parsed[beh] || {};
+    var sev = String(v.severity || "").toLowerCase();
+    if (!SEVERITY_LABEL[sev]) sev = "";
+    out[beh] = { severity: sev, summary: String(v.summary || "").trim() };
+  });
+  return out;
+}
+
+function callClaude(prompt) {
+  var props = PropertiesService.getScriptProperties();
+  var apiKey = props.getProperty("ANTHROPIC_API_KEY");
+  if (!apiKey) throw new Error("Set ANTHROPIC_API_KEY in Apps Script → Project Settings → Script properties.");
+  var model = props.getProperty("ANTHROPIC_MODEL") || "claude-opus-4-8";
+
+  var res = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
+    method: "post",
+    contentType: "application/json",
+    muteHttpExceptions: true,
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    payload: JSON.stringify({
+      model: model,
+      max_tokens: 2000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  var code = res.getResponseCode();
+  var data = JSON.parse(res.getContentText());
+  if (code !== 200) throw new Error("Claude API " + code + ": " + (data.error && data.error.message || res.getContentText()));
+  if (data.stop_reason === "refusal") throw new Error("Claude declined to summarize this week.");
+  return (data.content || []).filter(function (b) { return b.type === "text"; })
+    .map(function (b) { return b.text; }).join("");
+}
+
+// Write the draft as a brand-new rightmost column; never overwrites existing cells.
+function writeDraftColumn(grid, weekStart, drafts) {
+  var loc = locateGrid(grid);
+  if (!loc) throw new Error("Could not locate the grid's behavior rows.");
+  var col = grid.getLastColumn() + 1; // first empty column after all content
+  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
+
+  grid.getRange(loc.headerRow + 1, col)
+    .setValue(Utilities.formatDate(weekEnd, Session.getScriptTimeZone(), "dd/MM/yyyy"))
+    .setFontWeight("bold");
+
+  var written = 0;
+  Object.keys(drafts).forEach(function (beh) {
+    var rowIdx = loc.behaviorRows[beh.toLowerCase()];
+    if (!rowIdx) return;
+    var d = drafts[beh];
+    var cell = grid.getRange(rowIdx + 1, col);
+    cell.setValue(d.summary).setWrap(true);
+    if (d.severity && SEVERITY_COLOR[d.severity]) cell.setBackground(SEVERITY_COLOR[d.severity]);
+    written++;
+  });
+  return written;
+}
+
+// Find the date header row and map each behavior label (lowercased) to its row index.
+function locateGrid(grid) {
+  var values = grid.getDataRange().getValues();
+  var headerRow = -1, dateCols = [], best = 0;
+  for (var r = 0; r < Math.min(values.length, 8); r++) {
+    var count = 0, cols = [];
+    for (var c = 0; c < values[r].length; c++) {
+      if (parseGridDate(values[r][c])) { cols.push(c); count++; }
+    }
+    if (count > best) { best = count; headerRow = r; dateCols = cols; }
+  }
+  if (headerRow < 0) return null;
+  var firstDateCol = dateCols[0];
+  var behaviorRows = {};
+  for (var rr = headerRow + 1; rr < values.length; rr++) {
+    for (var bc = firstDateCol - 1; bc >= 0; bc--) {
+      var label = String(values[rr][bc]).trim();
+      if (label) { behaviorRows[label.toLowerCase()] = rr; break; }
+    }
+  }
+  return { headerRow: headerRow, behaviorRows: behaviorRows };
+}
+
+function dateKey(d) {
+  return Utilities.formatDate(d, "UTC", "yyyy-MM-dd");
+}
+
+// Weekly time-driven trigger: draft the just-finished week. Attach via
+// Apps Script → Triggers → weeklyDraftTrigger → Time-driven → Week timer.
+function weeklyDraftTrigger() {
+  var lastWeek = mondayOf(new Date());
+  lastWeek.setDate(lastWeek.getDate() - 7);
+  handleWeeklyDraft({ weekStart: lastWeek.toISOString() });
 }
 
 /* ============================ sheet helpers ============================ */
