@@ -10,6 +10,10 @@ const TAXONOMY = [
 ];
 
 const SEVERITY_LABELS = { green: "Good", yellow: "Watch", orange: "Issue", red: "Incident" };
+const SEVERITY_RANK = { green: 0, yellow: 1, orange: 2, red: 3 };
+const REACTIVITY_CATEGORY = "Reactivity";
+// A reactivity entry at Issue (orange) or worse spoils a "minimal-reactivity" day.
+const REACTIVITY_ISSUE_RANK = SEVERITY_RANK.orange;
 
 const store = {
   get entries() { return JSON.parse(localStorage.getItem("entries") || "[]"); },
@@ -83,6 +87,7 @@ function saveEntry() {
   toast(`Logged: ${entry.behavior} (${SEVERITY_LABELS[entry.severity]})`);
   refreshPendingBadge();
   renderHistory();
+  renderInsights();
   syncNow({ silent: true });
 }
 
@@ -112,6 +117,7 @@ function renderHistory() {
       if (!confirm("Delete this entry? (Already-synced entries stay in the sheet.)")) return;
       store.entries = store.entries.filter((x) => x.id !== e.id);
       renderHistory();
+      renderInsights();
       refreshPendingBadge();
     });
     li.appendChild(left);
@@ -139,6 +145,140 @@ function exportCsv() {
   a.download = `diesel-log-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+/* ---------- UI: trends / insights ---------- */
+function dayKey(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+// Monday-based start of the week containing `ts`, at local midnight.
+function startOfWeek(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  const dow = (d.getDay() + 6) % 7; // Mon=0 … Sun=6
+  d.setDate(d.getDate() - dow);
+  return d;
+}
+
+function fmtWeekRange(weekStart) {
+  const end = new Date(weekStart);
+  end.setDate(end.getDate() + 6);
+  const opts = { month: "short", day: "numeric" };
+  return `${weekStart.toLocaleDateString([], opts)} – ${end.toLocaleDateString([], opts)}`;
+}
+
+// Per-week rollup: tracked days, minimal-reactivity days, totals, worst-by-behavior.
+function weekStats(entries) {
+  const days = new Map(); // dayKey -> { reactIssue: bool }
+  let reactIssues = 0;
+  for (const e of entries) {
+    const k = dayKey(e.ts);
+    if (!days.has(k)) days.set(k, { reactIssue: false });
+    if (e.category === REACTIVITY_CATEGORY && SEVERITY_RANK[e.severity] >= REACTIVITY_ISSUE_RANK) {
+      days.get(k).reactIssue = true;
+      reactIssues++;
+    }
+  }
+  let minimal = 0;
+  days.forEach((d) => { if (!d.reactIssue) minimal++; });
+  return { tracked: days.size, minimal, reactIssues, total: entries.length };
+}
+
+function renderInsights() {
+  const entries = store.entries;
+  $("trendsEmpty").hidden = entries.length > 0;
+
+  // Group entries by ISO-ish week (keyed by week-start timestamp).
+  const weeks = new Map(); // weekKey(ms) -> { start, entries: [] }
+  for (const e of entries) {
+    const start = startOfWeek(e.ts);
+    const key = start.getTime();
+    if (!weeks.has(key)) weeks.set(key, { start, entries: [] });
+    weeks.get(key).entries.push(e);
+  }
+  const sortedWeeks = [...weeks.values()].sort((a, b) => b.start - a.start);
+
+  // --- Reactivity estimate card ---
+  const thisWeekStart = startOfWeek(Date.now());
+  const thisWeek = weeks.get(thisWeekStart.getTime());
+  const tw = thisWeek ? weekStats(thisWeek.entries) : { tracked: 0, minimal: 0 };
+  $("reactivityThisWeek").textContent = String(tw.minimal);
+
+  const avgEl = $("reactivityAvg");
+  if (sortedWeeks.length === 0) {
+    avgEl.textContent = "Log a few days to start seeing the weekly pattern.";
+  } else {
+    const totalMinimal = sortedWeeks.reduce((s, w) => s + weekStats(w.entries).minimal, 0);
+    const avg = totalMinimal / sortedWeeks.length;
+    const trackedNote = tw.tracked
+      ? `${tw.minimal} of ${tw.tracked} tracked day${tw.tracked === 1 ? "" : "s"} this week`
+      : "no days tracked yet this week";
+    avgEl.innerHTML =
+      `<strong>≈ ${avg.toFixed(1)} day${avg.toFixed(1) === "1.0" ? "" : "s"}/week</strong> ` +
+      `across ${sortedWeeks.length} week${sortedWeeks.length === 1 ? "" : "s"} of data` +
+      `<br><span class="hint">${trackedNote}</span>`;
+  }
+
+  // --- This week, by behavior (mirrors the sheet's weekly summary) ---
+  const weekSummary = $("weekSummary");
+  weekSummary.innerHTML = "";
+  $("weekRange").textContent = fmtWeekRange(thisWeekStart);
+  if (!thisWeek) {
+    weekSummary.innerHTML = `<p class="hint">Nothing logged this week yet.</p>`;
+  } else {
+    // worst severity + count per behavior, grouped by the canonical taxonomy order.
+    const byBehavior = new Map(); // "cat beh" -> { count, worst }
+    for (const e of thisWeek.entries) {
+      const k = e.category + " " + e.behavior;
+      const cur = byBehavior.get(k) || { count: 0, worst: "green" };
+      cur.count++;
+      if (SEVERITY_RANK[e.severity] > SEVERITY_RANK[cur.worst]) cur.worst = e.severity;
+      byBehavior.set(k, cur);
+    }
+    for (const group of TAXONOMY) {
+      const rows = group.behaviors
+        .map((b) => ({ behavior: b, stat: byBehavior.get(group.category + " " + b) }))
+        .filter((r) => r.stat);
+      if (rows.length === 0) continue;
+      const cat = document.createElement("div");
+      cat.className = "sum-cat";
+      cat.textContent = group.category;
+      weekSummary.appendChild(cat);
+      for (const r of rows) {
+        const row = document.createElement("div");
+        row.className = "sum-row";
+        row.innerHTML =
+          `<span class="sum-name">${escapeHtml(r.behavior)}</span>` +
+          `<span class="sum-meta">` +
+          `<span class="sum-count">${r.stat.count}×</span>` +
+          `<span class="chip ${r.stat.worst}">${SEVERITY_LABELS[r.stat.worst]}</span>` +
+          `</span>`;
+        weekSummary.appendChild(row);
+      }
+    }
+  }
+
+  // --- Recent weeks breakdown ---
+  const hist = $("weeklyHistory");
+  hist.innerHTML = "";
+  if (sortedWeeks.length === 0) {
+    hist.innerHTML = `<p class="hint">No weeks to summarize yet.</p>`;
+  } else {
+    for (const w of sortedWeeks.slice(0, 8)) {
+      const s = weekStats(w.entries);
+      const row = document.createElement("div");
+      row.className = "week-row";
+      row.innerHTML =
+        `<span class="week-range">${fmtWeekRange(w.start)}</span>` +
+        `<span class="week-stats">` +
+        `<span class="week-min">${s.minimal}/${s.tracked}</span> min-reactivity days` +
+        `<br>${s.total} log${s.total === 1 ? "" : "s"} · ${s.reactIssues} reactivity issue${s.reactIssues === 1 ? "" : "s"}` +
+        `</span>`;
+      hist.appendChild(row);
+    }
+  }
 }
 
 /* ---------- Sync ---------- */
@@ -252,12 +392,14 @@ function switchScreen(name) {
   $(`screen-${name}`).classList.add("active");
   document.querySelectorAll(".tab").forEach((t) =>
     t.classList.toggle("active", t.dataset.screen === name));
+  if (name === "trends") renderInsights();
 }
 
 /* ---------- Init ---------- */
 function init() {
   renderBehaviorList();
   renderHistory();
+  renderInsights();
   refreshPendingBadge();
   loadSettingsForm();
   scheduleAutoSync();

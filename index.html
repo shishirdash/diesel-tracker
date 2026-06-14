@@ -46,6 +46,27 @@
       <p id="historyEmpty" class="hint" hidden>No entries yet. Log something on the Log tab.</p>
     </section>
 
+    <!-- TRENDS SCREEN -->
+    <section id="screen-trends" class="screen">
+      <div class="insight-card">
+        <div class="insight-big" id="reactivityThisWeek">—</div>
+        <div class="insight-label">minimal-reactivity days this week</div>
+        <div class="insight-sub" id="reactivityAvg"></div>
+      </div>
+
+      <h2 class="trend-h">This week by behavior</h2>
+      <p class="hint" id="weekRange"></p>
+      <div id="weekSummary"></div>
+      <p id="trendsEmpty" class="hint" hidden>No entries yet. Patterns appear here as you log.</p>
+
+      <h2 class="trend-h">Recent weeks</h2>
+      <div id="weeklyHistory"></div>
+
+      <p class="hint trend-foot">A <strong>minimal-reactivity day</strong> = a tracked day
+        (with at least one log) where no Reactivity behavior was logged as <em>Issue</em> or
+        <em>Incident</em>. The weekly average covers every week that has data.</p>
+    </section>
+
     <!-- SETTINGS SCREEN -->
     <section id="screen-settings" class="screen">
       <h2>Sheet sync</h2>
@@ -91,6 +112,7 @@
   <nav class="tabbar">
     <button data-screen="log" class="tab active">📝 Log</button>
     <button data-screen="history" class="tab">📋 History</button>
+    <button data-screen="trends" class="tab">📊 Trends</button>
     <button data-screen="settings" class="tab">⚙️ Settings</button>
   </nav>
 

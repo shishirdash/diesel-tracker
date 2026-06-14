@@ -198,6 +198,68 @@ button.secondary { background: #e2e8f0; color: var(--text); }
   align-self: flex-start;
 }
 
+/* Trends */
+.insight-card {
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: var(--radius);
+  padding: 18px 16px;
+  text-align: center;
+  margin-bottom: 6px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+.insight-big { font-size: 2.4rem; font-weight: 800; color: var(--indigo); line-height: 1; }
+.insight-label { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+.insight-sub { margin-top: 10px; font-size: 0.9rem; color: var(--text); }
+
+.trend-h {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 20px 0 8px;
+}
+.trend-foot { margin-top: 18px; }
+
+.sum-cat {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 12px 0 4px;
+}
+.sum-row, .week-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid #e2e8f0;
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+}
+.sum-row { padding: 8px 12px; }
+.sum-name { font-size: 0.92rem; }
+.sum-meta { display: flex; align-items: center; gap: 8px; }
+.sum-count { color: var(--muted); font-size: 0.85rem; }
+
+.chip {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: white;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.chip.green { background: var(--green); }
+.chip.yellow { background: var(--yellow); }
+.chip.orange { background: var(--orange); }
+.chip.red { background: var(--red); }
+
+.week-row { padding: 10px 12px; }
+.week-range { font-weight: 600; font-size: 0.9rem; }
+.week-stats { font-size: 0.78rem; color: var(--muted); text-align: right; line-height: 1.4; }
+.week-min { color: var(--green); font-weight: 700; }
+
 /* Tab bar */
 .tabbar {
   position: fixed;
