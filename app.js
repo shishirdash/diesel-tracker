@@ -10,6 +10,15 @@ const TAXONOMY = [
 ];
 
 const SEVERITY_LABELS = { green: "Good", yellow: "Watch", orange: "Issue", red: "Incident" };
+
+// Fold sheet category-name variants (e.g. "Leash pulling (non-prong)") onto the
+// app's canonical taxonomy names so imported rows line up with app-logged ones.
+function canonCategory(cat) {
+  if (!cat) return cat;
+  for (const g of TAXONOMY) if (g.category === cat) return g.category;
+  for (const g of TAXONOMY) if (cat.indexOf(g.category) === 0) return g.category;
+  return cat;
+}
 const SEVERITY_RANK = { green: 0, yellow: 1, orange: 2, red: 3 };
 const REACTIVITY_CATEGORY = "Reactivity";
 // A reactivity entry at Issue (orange) or worse spoils a "minimal-reactivity" day.
@@ -305,7 +314,7 @@ function renderBehaviorGrid(sortedWeeks) {
     for (const e of w.entries) {
       const rank = SEVERITY_RANK[e.severity];
       if (rank === undefined) continue;
-      const k = e.category + "|" + e.behavior;
+      const k = canonCategory(e.category) + "|" + e.behavior;
       const cur = m.get(k);
       if (!cur || rank > SEVERITY_RANK[cur.severity]) m.set(k, { severity: e.severity, note: e.note || "" });
     }
@@ -439,9 +448,9 @@ function renderInsights() {
     weekSummary.innerHTML = `<p class="hint">Nothing logged this week yet.</p>`;
   } else {
     // worst severity + count per behavior, grouped by the canonical taxonomy order.
-    const byBehavior = new Map(); // "cat beh" -> { count, worst }
+    const byBehavior = new Map(); // "cat beh" -> { count, worst }
     for (const e of thisWeek.entries) {
-      const k = e.category + " " + e.behavior;
+      const k = canonCategory(e.category) + " " + e.behavior;
       const cur = byBehavior.get(k) || { count: 0, worst: "green" };
       cur.count++;
       if (SEVERITY_RANK[e.severity] > SEVERITY_RANK[cur.worst]) cur.worst = e.severity;
@@ -449,7 +458,7 @@ function renderInsights() {
     }
     for (const group of TAXONOMY) {
       const rows = group.behaviors
-        .map((b) => ({ behavior: b, stat: byBehavior.get(group.category + " " + b) }))
+        .map((b) => ({ behavior: b, stat: byBehavior.get(group.category + " " + b) }))
         .filter((r) => r.stat);
       if (rows.length === 0) continue;
       const cat = document.createElement("div");
