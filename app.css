@@ -260,6 +260,12 @@ button.secondary { background: #e2e8f0; color: var(--text); }
 .week-right { display: flex; align-items: center; gap: 6px; }
 .week-stats { font-size: 0.78rem; color: var(--muted); text-align: right; line-height: 1.4; }
 .week-min { color: var(--green); font-weight: 700; }
+.week-min.est { color: var(--muted); font-style: italic; }
+.est-tag {
+  font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: #fff; background: var(--muted); border-radius: 4px; padding: 1px 5px; vertical-align: middle;
+}
+.week-assess { color: var(--muted); }
 .ovr { color: var(--indigo); font-weight: 600; }
 .wk-edit {
   background: none; color: var(--muted);

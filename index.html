@@ -76,9 +76,12 @@
       <h2 class="trend-h">Recent weeks</h2>
       <div id="weeklyHistory"></div>
 
-      <p class="hint trend-foot">A <strong>minimal-reactivity day</strong> = a tracked day
-        (with at least one log) where no Reactivity behavior was logged as <em>Issue</em> or
-        <em>Incident</em>. The weekly average covers every week that has data.</p>
+      <p class="hint trend-foot">A <strong>minimal-reactivity day</strong> = a day with daily
+        tracking where no Reactivity behavior was logged as <em>Issue</em> or <em>Incident</em>.
+        Weeks before you started daily tracking have no per-day data, so they show an
+        <strong>est</strong> value derived from that week's assessed reactivity severity
+        (Good&nbsp;≈&nbsp;7, Watch&nbsp;≈&nbsp;5, Issue&nbsp;≈&nbsp;2, Incident&nbsp;0) — a rough
+        heuristic, not a measurement. The headline average counts tracked weeks only.</p>
     </section>
 
     <!-- SETTINGS SCREEN -->

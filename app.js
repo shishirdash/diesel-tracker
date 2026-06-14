@@ -19,6 +19,10 @@ function canonCategory(cat) {
   for (const g of TAXONOMY) if (cat.indexOf(g.category) === 0) return g.category;
   return cat;
 }
+
+// Heuristic: turn a weekly assessed reactivity severity into an estimated
+// minimal-reactivity-day count, for the pre-daily-tracking era only.
+const SEVERITY_TO_MINIMAL_DAYS = { green: 7, yellow: 5, orange: 2, red: 0 };
 const SEVERITY_RANK = { green: 0, yellow: 1, orange: 2, red: 3 };
 const REACTIVITY_CATEGORY = "Reactivity";
 // A reactivity entry at Issue (orange) or worse spoils a "minimal-reactivity" day.
@@ -393,6 +397,36 @@ function renderBehaviorGrid(sortedWeeks) {
   grid.appendChild(table);
 }
 
+// A week is "measured" once it has any daily-tracked observation (app log or a
+// hand-added daily row) — as opposed to only imported weekly assessments.
+function isMeasuredWeek(w) {
+  return w.entries.some((e) => e.source !== "sheet-history");
+}
+
+function worstReactivitySeverity(entries) {
+  let worst = null, rank = -1;
+  for (const e of entries) {
+    if (canonCategory(e.category) !== REACTIVITY_CATEGORY) continue;
+    const r = SEVERITY_RANK[e.severity];
+    if (r !== undefined && r > rank) { rank = r; worst = e.severity; }
+  }
+  return worst;
+}
+
+// Minimal-reactivity-days for a week, tagged by how it was derived:
+//  - "measured":  span − issue days (real daily sampling)
+//  - "estimate":  mapped from the assessed reactivity severity (old era)
+//  - "none":      no reactivity data at all
+function weekReactivity(w, weekStart) {
+  if (isMeasuredWeek(w)) {
+    const s = weekStats(w.entries, weekStart);
+    return { basis: "measured", days: s.minimal, span: s.span, issueDays: s.issueDays };
+  }
+  const sev = worstReactivitySeverity(w.entries);
+  if (sev === null) return { basis: "none", days: null };
+  return { basis: "estimate", days: SEVERITY_TO_MINIMAL_DAYS[sev], severity: sev };
+}
+
 function renderInsights() {
   const entries = activeEntries();
   const overrides = store.weekOverrides;
@@ -425,15 +459,18 @@ function renderInsights() {
 
   const avgEl = $("reactivityAvg");
   const completeWeeks = sortedWeeks.filter((w) => w.start.getTime() !== thisWeekStart.getTime());
+  // The headline average is measured-only — old assessment weeks are estimates
+  // and are kept out so the number stays honest.
+  const measuredComplete = completeWeeks.filter(isMeasuredWeek);
   const subNote = `${tw.issueDays} issue day${tw.issueDays === 1 ? "" : "s"} of ${tw.span} so far this week`;
-  if (completeWeeks.length === 0) {
-    avgEl.innerHTML = `First week in progress — a weekly average appears once a full week is logged.` +
-      `<br><span class="hint">${subNote}</span>`;
+  if (measuredComplete.length === 0) {
+    avgEl.innerHTML = `A tracked weekly average appears once you've logged a full week of daily entries.` +
+      `<br><span class="hint">${subNote} · earlier weeks below are severity-based estimates</span>`;
   } else {
-    const avg = completeWeeks.reduce((s, w) => s + minimalFor(w), 0) / completeWeeks.length;
+    const avg = measuredComplete.reduce((s, w) => s + minimalFor(w), 0) / measuredComplete.length;
     avgEl.innerHTML =
       `<strong>≈ ${avg.toFixed(1)} days/week</strong> across ` +
-      `${completeWeeks.length} complete week${completeWeeks.length === 1 ? "" : "s"}` +
+      `${measuredComplete.length} tracked week${measuredComplete.length === 1 ? "" : "s"}` +
       `<br><span class="hint">${subNote}</span>`;
   }
 
@@ -487,18 +524,29 @@ function renderInsights() {
   } else {
     for (const w of sortedWeeks.slice(0, 8)) {
       const key = String(w.start.getTime());
-      const s = weekStats(w.entries, w.start);
+      const rr = weekReactivity(w, w.start);
       const overridden = key in overrides;
-      const shownMin = overridden ? overrides[key] : s.minimal;
+      const total = w.entries.length;
       const row = document.createElement("div");
       row.className = "week-row";
 
       const stats = document.createElement("span");
       stats.className = "week-stats";
-      stats.innerHTML =
-        `<span class="week-min">${shownMin}/${s.span}</span> min-reactivity days` +
-        (overridden ? ` <span class="ovr">(edited)</span>` : "") +
-        `<br>${s.total} log${s.total === 1 ? "" : "s"} · ${s.issueDays} issue day${s.issueDays === 1 ? "" : "s"}`;
+      if (overridden) {
+        stats.innerHTML =
+          `<span class="week-min">${overrides[key]}</span> min-reactivity days <span class="ovr">(edited)</span>` +
+          `<br>${total} log${total === 1 ? "" : "s"}`;
+      } else if (rr.basis === "measured") {
+        stats.innerHTML =
+          `<span class="week-min">${rr.days}/${rr.span}</span> min-reactivity days` +
+          `<br>${total} log${total === 1 ? "" : "s"} · ${rr.issueDays} issue day${rr.issueDays === 1 ? "" : "s"}`;
+      } else if (rr.basis === "estimate") {
+        stats.innerHTML =
+          `<span class="week-min est">≈${rr.days}</span> <span class="est-tag">est</span> min-reactivity days` +
+          `<br><span class="week-assess">weekly assessment · worst: <span class="chip ${rr.severity}">${SEVERITY_LABELS[rr.severity]}</span></span>`;
+      } else {
+        stats.innerHTML = `<span class="week-min">—</span> no reactivity data<br>${total} log${total === 1 ? "" : "s"}`;
+      }
 
       const edit = document.createElement("button");
       edit.className = "wk-edit";
@@ -506,9 +554,10 @@ function renderInsights() {
       edit.title = "Override this week's number";
       edit.addEventListener("click", () => {
         const cur = overridden ? overrides[key] : "";
+        const calc = rr.days == null ? "n/a" : (rr.basis === "estimate" ? "≈" + rr.days + " (est)" : rr.days);
         const input = prompt(
           `Minimal-reactivity days for ${fmtWeekRange(w.start)}\n` +
-          `(calculated: ${s.minimal}; leave blank to use the calculated value)`,
+          `(calculated: ${calc}; leave blank to use the calculated value)`,
           String(cur));
         if (input === null) return;
         const ov = store.weekOverrides;
