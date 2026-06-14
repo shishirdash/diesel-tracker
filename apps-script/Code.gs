@@ -299,6 +299,14 @@ function writeDraftColumn(grid, weekStart, drafts) {
   var col = grid.getLastColumn() + 1; // first empty column after all content
   var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
 
+  // Remember which column is the live draft so the onEdit writeback watches
+  // only it — never the older hand-authored columns.
+  PropertiesService.getScriptProperties().setProperties({
+    DRAFT_GRID: grid.getName(),
+    DRAFT_COL: String(col),
+    DRAFT_WEEK: weekStart.toISOString(),
+  }, false);
+
   grid.getRange(loc.headerRow + 1, col)
     .setValue(Utilities.formatDate(weekEnd, Session.getScriptTimeZone(), "dd/MM/yyyy"))
     .setFontWeight("bold");
@@ -329,14 +337,39 @@ function locateGrid(grid) {
   }
   if (headerRow < 0) return null;
   var firstDateCol = dateCols[0];
-  var behaviorRows = {};
+  var behaviorRows = {}, rowInfo = {}, carriedCategory = "";
   for (var rr = headerRow + 1; rr < values.length; rr++) {
+    var behavior = "", behCol = -1;
     for (var bc = firstDateCol - 1; bc >= 0; bc--) {
       var label = String(values[rr][bc]).trim();
-      if (label) { behaviorRows[label.toLowerCase()] = rr; break; }
+      if (label) { behavior = label; behCol = bc; break; }
     }
+    if (!behavior) continue;
+    var category = carriedCategory;
+    for (var cc = behCol - 1; cc >= 0; cc--) {
+      var cv = String(values[rr][cc]).trim();
+      if (cv) { category = cv; break; }
+    }
+    if (category) carriedCategory = category;
+    behaviorRows[behavior.toLowerCase()] = rr;
+    rowInfo[rr] = { behavior: behavior, category: category };
   }
-  return { headerRow: headerRow, behaviorRows: behaviorRows };
+  return { headerRow: headerRow, behaviorRows: behaviorRows, rowInfo: rowInfo };
+}
+
+// Upsert the human/AI weekly assessment for one (week, behavior) into the SoT.
+function upsertWeeklyObservation(weekIso, category, behavior, severity, note) {
+  var sheet = getObsSheet();
+  var weekStart = new Date(weekIso);
+  var id = "weekly-" + weekStartKey(weekStart) + "-" + slug(category) + "-" + slug(behavior);
+  var index = buildIdIndex(sheet);
+  var ts = new Date(weekStart); ts.setUTCHours(12, 0, 0, 0);
+  var row = index[id] ? index[id].row : sheet.getLastRow() + 1;
+  writeRow(sheet, row, {
+    id: id, ts: ts.toISOString(), category: category, behavior: behavior,
+    severity: severity || "", note: note, source: "weekly",
+    updatedAt: new Date().toISOString(), deleted: "",
+  });
 }
 
 function dateKey(d) {
@@ -381,27 +414,60 @@ function normalizeSheet(sheet) {
   if (changed) range.setValues(vals);
 }
 
-// Simple trigger: stamp updatedAt (and backfill id/week) whenever someone edits
-// the Observations tab, so edits to existing rows also propagate to the app.
+// Simple trigger dispatcher: stamp Observations edits, and write back edits made
+// to the live draft column of the grid. Must not throw.
 function onEdit(e) {
   try {
     var sh = e.range.getSheet();
-    if (sh.getName() !== OBS_SHEET_NAME) return;
-    var startRow = e.range.getRow();
-    var numRows = e.range.getNumRows();
-    var now = new Date().toISOString();
-    for (var r = startRow; r < startRow + numRows; r++) {
-      if (r < 2) continue;
-      sh.getRange(r, COL.updatedAt).setValue(now);
-      if (String(sh.getRange(r, COL.id).getValue()).trim() === "") {
-        sh.getRange(r, COL.id).setValue("manual-" + Date.now() + "-" + Math.floor(Math.random() * 1e6));
-      }
-      var ts = sh.getRange(r, COL.timestamp).getValue();
-      if (String(sh.getRange(r, COL.week).getValue()).trim() === "" && ts) {
-        sh.getRange(r, COL.week).setValue(weekStartKey(new Date(ts)));
-      }
+    var name = sh.getName();
+    if (name === OBS_SHEET_NAME) { onEditObservations(e); return; }
+    var props = PropertiesService.getScriptProperties();
+    if (name === props.getProperty("DRAFT_GRID") && props.getProperty("DRAFT_COL")) {
+      onEditDraftColumn(e, props);
     }
   } catch (err) { /* simple triggers must not throw */ }
+}
+
+// Stamp updatedAt (and backfill id/week) on any Observations-tab edit, so edits
+// to existing rows also propagate to the app.
+function onEditObservations(e) {
+  var sh = e.range.getSheet();
+  var startRow = e.range.getRow();
+  var numRows = e.range.getNumRows();
+  var now = new Date().toISOString();
+  for (var r = startRow; r < startRow + numRows; r++) {
+    if (r < 2) continue;
+    sh.getRange(r, COL.updatedAt).setValue(now);
+    if (String(sh.getRange(r, COL.id).getValue()).trim() === "") {
+      sh.getRange(r, COL.id).setValue("manual-" + Date.now() + "-" + Math.floor(Math.random() * 1e6));
+    }
+    var ts = sh.getRange(r, COL.timestamp).getValue();
+    if (String(sh.getRange(r, COL.week).getValue()).trim() === "" && ts) {
+      sh.getRange(r, COL.week).setValue(weekStartKey(new Date(ts)));
+    }
+  }
+}
+
+// When the live draft column is edited, upsert the matching weekly Observation
+// (severity from the cell's color, summary from its text). Only this column is
+// watched — older hand-authored columns are never written back.
+function onEditDraftColumn(e, props) {
+  var draftCol = Number(props.getProperty("DRAFT_COL"));
+  var weekIso = props.getProperty("DRAFT_WEEK");
+  var startCol = e.range.getColumn(), numCols = e.range.getNumColumns();
+  if (draftCol < startCol || draftCol > startCol + numCols - 1) return;
+
+  var sh = e.range.getSheet();
+  var loc = locateGrid(sh);
+  if (!loc || !loc.rowInfo) return;
+  var startRow = e.range.getRow(), numRows = e.range.getNumRows();
+  for (var r = startRow; r < startRow + numRows; r++) {
+    var info = loc.rowInfo[r - 1]; // rowInfo keyed by 0-based row index
+    if (!info) continue;
+    var cell = sh.getRange(r, draftCol);
+    upsertWeeklyObservation(weekIso, info.category, info.behavior,
+      hexToSeverity(cell.getBackground()), String(cell.getValue()).trim());
+  }
 }
 
 function getObsSheet() {
