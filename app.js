@@ -105,9 +105,10 @@ function saveEntry() {
   const whenVal = $("entryWhen").value;
   const ts = whenVal ? new Date(whenVal).toISOString() : new Date().toISOString();
   const note = $("noteInput").value.trim();
+  const now = new Date().toISOString();
   if (editingId) {
     store.entries = store.entries.map((e) =>
-      e.id === editingId ? { ...e, severity: currentSeverity, note, ts, synced: false } : e);
+      e.id === editingId ? { ...e, severity: currentSeverity, note, ts, updatedAt: now, synced: false } : e);
     toast("Entry updated.");
   } else {
     const entry = {
@@ -117,6 +118,9 @@ function saveEntry() {
       behavior: currentSelection.behavior,
       severity: currentSeverity,
       note,
+      source: "app",
+      updatedAt: now,
+      deleted: false,
       synced: false,
     };
     store.entries = [entry, ...store.entries];
@@ -142,6 +146,9 @@ function markDay(severity) {
     behavior: "Day marker",
     severity,
     note: "",
+    source: "app",
+    updatedAt: new Date().toISOString(),
+    deleted: false,
     synced: false,
   };
   store.entries = [entry, ...store.entries];
@@ -153,9 +160,14 @@ function markDay(severity) {
 }
 
 /* ---------- UI: history ---------- */
+// Live entries = everything that isn't a delete tombstone.
+function activeEntries() {
+  return store.entries.filter((e) => !e.deleted);
+}
+
 function renderHistory() {
   const list = $("historyList");
-  const entries = [...store.entries].sort((a, b) => new Date(b.ts) - new Date(a.ts));
+  const entries = activeEntries().sort((a, b) => new Date(b.ts) - new Date(a.ts));
   list.innerHTML = "";
   $("historyEmpty").hidden = entries.length > 0;
   for (const e of entries) {
@@ -182,11 +194,14 @@ function renderHistory() {
     del.className = "delete-btn";
     del.textContent = "✕";
     del.addEventListener("click", () => {
-      if (!confirm("Delete this entry? (Already-synced entries stay in the sheet.)")) return;
-      store.entries = store.entries.filter((x) => x.id !== e.id);
+      if (!confirm("Delete this entry? It will be removed from the sheet too.")) return;
+      // Tombstone rather than drop, so the deletion can propagate to the SoT.
+      store.entries = store.entries.map((x) =>
+        x.id === e.id ? { ...x, deleted: true, updatedAt: new Date().toISOString(), synced: false } : x);
       renderHistory();
       renderInsights();
       refreshPendingBadge();
+      syncNow({ silent: true });
     });
     actions.appendChild(edit);
     actions.appendChild(del);
@@ -203,7 +218,7 @@ function escapeHtml(s) {
 
 function exportCsv() {
   const rows = [["timestamp", "category", "behavior", "severity", "note", "synced"]];
-  for (const e of store.entries) {
+  for (const e of activeEntries()) {
     rows.push([e.ts, e.category, e.behavior, e.severity, e.note, e.synced]);
   }
   const csv = rows
@@ -268,7 +283,7 @@ function weekStats(entries, weekStart) {
 }
 
 function renderInsights() {
-  const entries = store.entries;
+  const entries = activeEntries();
   const overrides = store.weekOverrides;
   $("trendsEmpty").hidden = entries.length > 0;
 
@@ -418,15 +433,52 @@ function refreshPendingBadge() {
   badge.textContent = pending;
 }
 
+// Shape a local entry as a SoT observation for the wire.
+function obsFromEntry(e) {
+  return {
+    id: e.id, ts: e.ts, category: e.category, behavior: e.behavior,
+    severity: e.severity, note: e.note || "", source: e.source || "app",
+    updatedAt: e.updatedAt || e.ts, deleted: !!e.deleted,
+  };
+}
+
+// Merge observations pulled from the SoT into the local replica (last-write-wins).
+function mergeRemote(remote) {
+  const local = store.entries.slice();
+  const byId = new Map(local.map((e, i) => [e.id, i]));
+  for (const r of remote) {
+    const incoming = {
+      id: r.id, ts: r.ts, category: r.category, behavior: r.behavior,
+      severity: r.severity, note: r.note || "", source: r.source || "sheet",
+      updatedAt: r.updatedAt || r.ts, deleted: !!r.deleted, synced: true,
+    };
+    const idx = byId.get(r.id);
+    if (idx === undefined) {
+      local.push(incoming);
+      byId.set(r.id, local.length - 1);
+    } else if (new Date(incoming.updatedAt || 0) > new Date(local[idx].updatedAt || 0)) {
+      local[idx] = incoming;
+    }
+  }
+  store.entries = local;
+}
+
+async function postJson(url, payload) {
+  const res = await fetch(url, {
+    method: "POST",
+    // text/plain avoids a CORS preflight, which Apps Script can't answer
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || "Request rejected");
+  return data;
+}
+
 async function syncNow({ silent = false } = {}) {
   const { scriptUrl, scriptToken } = store.settings;
-  const pending = store.entries.filter((e) => !e.synced);
   if (!scriptUrl) {
     if (!silent) toast("Set the Apps Script URL in Settings first.");
-    return;
-  }
-  if (pending.length === 0) {
-    if (!silent) toast("Nothing to sync — sheet is up to date.");
     return;
   }
   if (!navigator.onLine) {
@@ -437,30 +489,48 @@ async function syncNow({ silent = false } = {}) {
   const btn = $("syncNowBtn");
   btn.classList.add("spinning");
   try {
-    const res = await fetch(scriptUrl, {
-      method: "POST",
-      // text/plain avoids a CORS preflight, which Apps Script can't answer
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        token: scriptToken || "",
-        entries: pending.map(({ id, ts, category, behavior, severity, note }) => ({
-          id, ts, category, behavior, severity, note,
-        })),
-      }),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "Sync rejected");
-    const syncedIds = new Set(pending.map((e) => e.id));
-    store.entries = store.entries.map((e) =>
-      syncedIds.has(e.id) ? { ...e, synced: true } : e);
-    store.settings = { ...store.settings, lastSync: new Date().toISOString() };
-    if (!silent) toast(`Synced ${pending.length} entr${pending.length === 1 ? "y" : "ies"} to the sheet.`);
+    // 1. Push anything edited locally since the last sync.
+    const pending = store.entries.filter((e) => !e.synced);
+    if (pending.length) {
+      await postJson(scriptUrl, { token: scriptToken || "", action: "push", observations: pending.map(obsFromEntry) });
+      const ids = new Set(pending.map((e) => e.id));
+      store.entries = store.entries.map((e) => (ids.has(e.id) ? { ...e, synced: true } : e));
+    }
+    // 2. Pull changes made on other surfaces (the sheet, the trainer) and merge.
+    const since = store.settings.lastPull || "";
+    const pulled = await postJson(scriptUrl, { token: scriptToken || "", action: "pull", since });
+    const remote = pulled.observations || [];
+    mergeRemote(remote);
+    store.settings = {
+      ...store.settings,
+      lastPull: pulled.now || new Date().toISOString(),
+      lastSync: new Date().toISOString(),
+    };
+    if (!silent) toast(`Synced — ${pending.length} sent, ${remote.length} received.`);
     refreshPendingBadge();
     renderHistory();
+    renderInsights();
   } catch (err) {
     if (!silent) toast(`Sync failed: ${err.message}`);
   } finally {
     btn.classList.remove("spinning");
+  }
+}
+
+async function importHistory() {
+  const { scriptUrl, scriptToken } = store.settings;
+  const msg = $("importMsg");
+  if (!scriptUrl) { msg.textContent = "Set the Apps Script URL in Settings first."; return; }
+  msg.textContent = "Importing…";
+  try {
+    const data = await postJson(scriptUrl, { token: scriptToken || "", action: "import" });
+    msg.textContent = `Imported ${data.inserted} of ${data.parsed} historical rows across ${(data.weeks || []).length} weeks. Pulling…`;
+    // Force a full re-pull so the imported rows land locally.
+    store.settings = { ...store.settings, lastPull: "" };
+    await syncNow({ silent: true });
+    msg.textContent = `Done — ${data.inserted} historical rows imported and pulled into the app.`;
+  } catch (err) {
+    msg.textContent = `Import failed: ${err.message}`;
   }
 }
 
@@ -525,7 +595,19 @@ function switchScreen(name) {
 }
 
 /* ---------- Init ---------- */
+// Backfill SoT fields on entries created before two-way sync existed.
+function migrateEntries() {
+  let changed = false;
+  const migrated = store.entries.map((e) => {
+    if (e.updatedAt && e.source && "deleted" in e) return e;
+    changed = true;
+    return { ...e, updatedAt: e.updatedAt || e.ts, source: e.source || "app", deleted: e.deleted || false };
+  });
+  if (changed) store.entries = migrated;
+}
+
 function init() {
+  migrateEntries();
   renderBehaviorList();
   renderHistory();
   renderInsights();
@@ -554,6 +636,7 @@ function init() {
   $("syncNowBtn").addEventListener("click", () => syncNow());
   $("saveSettingsBtn").addEventListener("click", saveSettings);
   $("testSyncBtn").addEventListener("click", testConnection);
+  $("importHistoryBtn").addEventListener("click", importHistory);
   $("exportCsvBtn").addEventListener("click", exportCsv);
 
   window.addEventListener("online", () => syncNow({ silent: true }));
