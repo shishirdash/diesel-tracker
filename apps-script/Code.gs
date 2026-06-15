@@ -202,15 +202,18 @@ function handleWeeklyDraft(body) {
   var weekStart = body.weekStart ? mondayOf(new Date(body.weekStart)) : mondayOf(new Date());
   var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
 
-  // Gather this week's observations, grouped by behavior label.
+  // Daily logs only — exclude imported weekly assessments (sheet-history) and
+  // prior weekly drafts (weekly), which would otherwise leak into the window.
   var rows = readAllObs(getObsSheet()).filter(function (o) {
     if (o.deleted) return false;
+    if (o.source === "sheet-history" || o.source === "weekly") return false;
     var t = new Date(o.ts);
     return t >= weekStart && t < weekEnd && String(o.behavior).trim();
   });
   if (rows.length === 0) {
-    return jsonResponse({ ok: false, error: "No observations logged for the week of " + dateKey(weekStart) });
+    return jsonResponse({ ok: false, error: "No daily logs for the week of " + dateKey(weekStart) + " — nothing to draft." });
   }
+
   var byBehavior = {};
   rows.forEach(function (o) {
     var key = String(o.behavior).trim();
@@ -222,13 +225,31 @@ function handleWeeklyDraft(body) {
     });
   });
 
-  var drafts = generateWeeklyDrafts(byBehavior, weekStart); // { behavior: {severity, summary} }
+  // Minimal-reactivity days: span minus days with a daily reactivity Issue/Incident.
+  var issueDays = {};
+  rows.forEach(function (o) {
+    if (String(o.category).indexOf("Reactivity") === 0 && SEVERITY_RANK[o.severity] >= 2) {
+      issueDays[Utilities.formatDate(new Date(o.ts), Session.getScriptTimeZone(), "yyyy-MM-dd")] = true;
+    }
+  });
+  var minimalDays = Math.max(0, weekSpanDaysFor(weekStart, weekEnd) - Object.keys(issueDays).length);
+
+  var drafts = generateWeeklyDrafts(byBehavior, weekStart);
 
   var grid = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(body.gridSheet || GRID_SHEET_NAME);
   if (!grid) return jsonResponse({ ok: false, error: "Grid sheet not found" });
-  var written = writeDraftColumn(grid, weekStart, drafts);
+  var written = writeDraftColumn(grid, weekStart, drafts, minimalDays);
 
-  return jsonResponse({ ok: true, week: dateKey(weekStart), drafted: Object.keys(drafts).length, written: written, drafts: drafts });
+  return jsonResponse({ ok: true, week: dateKey(weekStart), drafted: Object.keys(drafts).length, written: written, minimalDays: minimalDays, drafts: drafts });
+}
+
+// 7 for a completed week; days elapsed (Mon→today) for the current week.
+function weekSpanDaysFor(weekStart, weekEnd) {
+  var now = new Date();
+  if (weekEnd <= now) return 7;
+  var a = new Date(weekStart); a.setHours(0, 0, 0, 0);
+  var b = new Date(now); b.setHours(0, 0, 0, 0);
+  return Math.min(7, Math.max(1, Math.floor((b - a) / 86400000) + 1));
 }
 
 // One Claude call for the whole week; returns { behavior: {severity, summary} }.
@@ -245,6 +266,9 @@ function generateWeeklyDrafts(byBehavior, weekStart) {
     "You are helping summarize a dog's weekly behavior-training log. Below are this week's " +
     "in-the-moment observations, grouped by behavior. Each line shows the logged severity " +
     "(Good/Watch/Issue/Incident) and a note.\n\n" +
+    "Summarize ONLY the behaviors listed below, using ONLY the notes provided. Do NOT add any " +
+    "behavior that is not listed, and do NOT invent observations, testing, or details that are " +
+    "not present in the notes. If a behavior has only one short note, keep its summary minimal.\n\n" +
     "For each behavior, write a concise 1-2 sentence summary in the reflective first-person voice " +
     "the owner uses (e.g. \"better this week, no incidents; still iffy on...\"), and assign the " +
     "week's overall severity. Use this mapping strictly:\n" +
@@ -265,6 +289,7 @@ function generateWeeklyDrafts(byBehavior, weekStart) {
   var parsed = JSON.parse(text);
   var out = {};
   Object.keys(parsed).forEach(function (beh) {
+    if (!Object.prototype.hasOwnProperty.call(byBehavior, beh)) return; // drop any behavior we didn't supply
     var v = parsed[beh] || {};
     var sev = String(v.severity || "").toLowerCase();
     if (!SEVERITY_LABEL[sev]) sev = "";
@@ -298,41 +323,56 @@ function callClaude(prompt) {
     .map(function (b) { return b.text; }).join("");
 }
 
-// Write the week's draft column. Reuses the column for this week if one already
-// exists (idempotent re-runs); otherwise appends a new rightmost column. Colors
-// are sampled from the grid's own palette so the draft matches existing cells.
-function writeDraftColumn(grid, weekStart, drafts) {
+// Write the week's draft column. Reuses this week's column if one exists
+// (idempotent), else places it flush after the last date column (no gap).
+// Clears the column's behavior cells first so stale content never lingers.
+function writeDraftColumn(grid, weekStart, drafts, minimalDays) {
   var loc = locateGrid(grid);
   if (!loc) throw new Error("Could not locate the grid's behavior rows.");
+  var values = loc.values;
   var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
   var label = Utilities.formatDate(weekEnd, Session.getScriptTimeZone(), "dd/MM/yyyy");
 
-  // Find an existing column with this week's header; else append after all content.
-  var lastCol = grid.getLastColumn();
-  var headerVals = grid.getRange(loc.headerRow + 1, 1, 1, lastCol).getValues()[0];
+  // Reuse this week's column if its header already exists.
+  var headerRowVals = values[loc.headerRow] || [];
   var col = -1;
-  for (var i = 0; i < headerVals.length; i++) {
-    var hv = headerVals[i];
+  for (var i = 0; i < headerRowVals.length; i++) {
+    var hv = headerRowVals[i];
     var hs = (hv instanceof Date) ? Utilities.formatDate(hv, Session.getScriptTimeZone(), "dd/MM/yyyy") : String(hv).trim();
     if (hs === label) { col = i + 1; break; }
   }
-  if (col < 0) col = lastCol + 1;
+  if (col < 0) {
+    // First empty column at/after the column following the last date column.
+    var behRowIdxs = Object.keys(loc.behaviorRows).map(function (k) { return loc.behaviorRows[k]; });
+    var c = Math.max.apply(null, loc.dateCols) + 1; // 0-based
+    for (var guard = 0; guard < 16; guard++, c++) {
+      var occupied = false;
+      for (var j = 0; j < behRowIdxs.length; j++) {
+        var v = (values[behRowIdxs[j]] || [])[c];
+        if (v !== "" && v !== null && v !== undefined) { occupied = true; break; }
+      }
+      if (!occupied) break;
+    }
+    col = c + 1; // 1-based
+  }
 
-  // Remember which column is the live draft so the onEdit writeback watches
-  // only it — never the older hand-authored columns.
   PropertiesService.getScriptProperties().setProperties({
-    DRAFT_GRID: grid.getName(),
-    DRAFT_COL: String(col),
-    DRAFT_WEEK: weekStart.toISOString(),
+    DRAFT_GRID: grid.getName(), DRAFT_COL: String(col), DRAFT_WEEK: weekStart.toISOString(),
   }, false);
 
   var palette = sampleGridPalette(grid, col);
+
+  // Refresh: clear every behavior cell in this column, then write header + value.
+  Object.keys(loc.behaviorRows).forEach(function (k) {
+    grid.getRange(loc.behaviorRows[k] + 1, col).clearContent().setBackground(null);
+  });
   grid.getRange(loc.headerRow + 1, col).setValue(label).setFontWeight("bold");
+  if (loc.minimalRow >= 0) grid.getRange(loc.minimalRow + 1, col).setValue(minimalDays);
 
   var written = 0;
   Object.keys(drafts).forEach(function (beh) {
     var rowIdx = loc.behaviorRows[beh.toLowerCase()];
-    if (!rowIdx) return;
+    if (rowIdx === undefined) return;
     var d = drafts[beh];
     var cell = grid.getRange(rowIdx + 1, col);
     cell.setValue(d.summary).setWrap(true);
@@ -367,7 +407,8 @@ function sampleGridPalette(grid, skipCol) {
   return palette;
 }
 
-// Find the date header row and map each behavior label (lowercased) to its row index.
+// Locate the date header row, behavior rows (label→index + category), the
+// "Minimal reactivity days" row, the date columns, and the raw values.
 function locateGrid(grid) {
   var values = grid.getDataRange().getValues();
   var headerRow = -1, dateCols = [], best = 0;
@@ -379,6 +420,14 @@ function locateGrid(grid) {
     if (count > best) { best = count; headerRow = r; dateCols = cols; }
   }
   if (headerRow < 0) return null;
+
+  var minimalRow = -1;
+  for (var mr = 0; mr < values.length && minimalRow < 0; mr++) {
+    for (var mc = 0; mc < values[mr].length; mc++) {
+      if (/minimal\s*reactiv/i.test(String(values[mr][mc]))) { minimalRow = mr; break; }
+    }
+  }
+
   var firstDateCol = dateCols[0];
   var behaviorRows = {}, rowInfo = {}, carriedCategory = "";
   for (var rr = headerRow + 1; rr < values.length; rr++) {
@@ -397,7 +446,8 @@ function locateGrid(grid) {
     behaviorRows[behavior.toLowerCase()] = rr;
     rowInfo[rr] = { behavior: behavior, category: category };
   }
-  return { headerRow: headerRow, behaviorRows: behaviorRows, rowInfo: rowInfo };
+  return { headerRow: headerRow, behaviorRows: behaviorRows, rowInfo: rowInfo,
+           dateCols: dateCols, minimalRow: minimalRow, values: values };
 }
 
 // Upsert the human/AI weekly assessment for one (week, behavior) into the SoT.
