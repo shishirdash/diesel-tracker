@@ -32,6 +32,7 @@ var COLS = ["id", "timestamp", "week", "category", "behavior", "severity", "note
 var COL = {}; COLS.forEach(function (c, i) { COL[c] = i + 1; }); // 1-based
 
 var SEVERITY_LABEL = { green: "Good", yellow: "Watch", orange: "Issue", red: "Incident" };
+var SEVERITY_RANK = { green: 0, yellow: 1, orange: 2, red: 3 };
 var SEVERITY_COLOR = { green: "#d9ead3", yellow: "#fff2cc", orange: "#fce5cd", red: "#f4cccc" };
 
 /* ============================ routing ============================ */
