@@ -368,7 +368,9 @@ function writeDraftColumn(grid, weekStart, drafts, minimalDays) {
     grid.getRange(loc.behaviorRows[k] + 1, col).clearContent().setBackground(null);
   });
   grid.getRange(loc.headerRow + 1, col).setValue(label).setFontWeight("bold");
-  if (loc.minimalRow >= 0) grid.getRange(loc.minimalRow + 1, col).setValue(minimalDays);
+  if (loc.minimalRow >= 0) {
+    grid.getRange(loc.minimalRow + 1, col).setNumberFormat("0").setValue(minimalDays);
+  }
 
   var written = 0;
   Object.keys(drafts).forEach(function (beh) {
@@ -476,6 +478,19 @@ function weeklyDraftTrigger() {
   var lastWeek = mondayOf(new Date());
   lastWeek.setDate(lastWeek.getDate() - 7);
   handleWeeklyDraft({ weekStart: lastWeek.toISOString() });
+}
+
+// Draft an arbitrary week — pass the Monday (or any day) of the target week.
+// Run from the editor for ad-hoc / past weeks. Logs the JSON result.
+function draftWeek(anyDayInWeekIso) {
+  var res = handleWeeklyDraft({ weekStart: new Date(anyDayInWeekIso).toISOString() });
+  Logger.log(res.getContent());
+  return res;
+}
+
+// Holdout test: draft the week ending Sun 14 Jun 2026 (starts Mon 8 Jun).
+function draftTestWeek() {
+  return draftWeek("2026-06-08T12:00:00.000Z");
 }
 
 /* ============================ sheet helpers ============================ */
