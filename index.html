@@ -65,10 +65,14 @@
       </div>
 
       <div class="daymark">
-        <div class="daymark-label">Close out this week
-          <p class="hint" style="font-weight:400;margin:2px 0 0">Drafts a new column in the sheet's Psych grid from this week's logs (AI-written summary + suggested color) for you/the trainer to review.</p>
+        <div class="daymark-label">Update Psych column
+          <p class="hint" style="font-weight:400;margin:2px 0 0">Drafts a new column from your daily logs since the last update (AI summary + colour + minimal-reactivity days) for you/the trainer to review. Set a date range to override.</p>
         </div>
-        <div class="daymark-btns">
+        <div class="daymark-btns" style="flex-direction:column;align-items:stretch;gap:6px">
+          <div style="display:flex;gap:6px">
+            <input type="date" id="draftFrom" aria-label="From" />
+            <input type="date" id="draftTo" aria-label="To" />
+          </div>
           <button id="closeWeekBtn" class="secondary">Draft column</button>
         </div>
       </div>

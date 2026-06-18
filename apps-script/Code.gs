@@ -200,19 +200,23 @@ function mondayOf(d) {
 // summary per behavior + a suggested severity color, derived from that week's
 // Observations. Never touches existing columns.
 function handleWeeklyDraft(body) {
-  var weekStart = body.weekStart ? mondayOf(new Date(body.weekStart)) : mondayOf(new Date());
-  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 7);
+  body = body || {};
+  var grid = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(body.gridSheet || GRID_SHEET_NAME);
+  if (!grid) return jsonResponse({ ok: false, error: "Grid sheet not found" });
+  var loc = locateGrid(grid);
+  if (!loc) return jsonResponse({ ok: false, error: "Could not locate the grid layout." });
 
-  // Daily logs only — exclude imported weekly assessments (sheet-history) and
-  // prior weekly drafts (weekly), which would otherwise leak into the window.
+  var period = resolvePeriod(body, loc);
+
+  // Daily logs only, within the period — exclude imported history and prior drafts.
   var rows = readAllObs(getObsSheet()).filter(function (o) {
     if (o.deleted) return false;
     if (o.source === "sheet-history" || o.source === "weekly") return false;
     var t = new Date(o.ts);
-    return t >= weekStart && t < weekEnd && String(o.behavior).trim();
+    return t >= period.start && t < period.endExcl && String(o.behavior).trim();
   });
   if (rows.length === 0) {
-    return jsonResponse({ ok: false, error: "No daily logs for the week of " + dateKey(weekStart) + " — nothing to draft." });
+    return jsonResponse({ ok: false, error: "No daily logs between " + fmtDate(period.start) + " and " + period.label + " — nothing to draft." });
   }
 
   var byBehavior = {};
@@ -226,35 +230,66 @@ function handleWeeklyDraft(body) {
     });
   });
 
-  // Minimal-reactivity days: span minus days with a daily reactivity Issue/Incident.
+  // Minimal-reactivity days over the period: span minus days with a reactivity Issue/Incident.
   var issueDays = {};
   rows.forEach(function (o) {
     if (String(o.category).indexOf("Reactivity") === 0 && SEVERITY_RANK[o.severity] >= 2) {
       issueDays[Utilities.formatDate(new Date(o.ts), Session.getScriptTimeZone(), "yyyy-MM-dd")] = true;
     }
   });
-  var minimalDays = Math.max(0, weekSpanDaysFor(weekStart, weekEnd) - Object.keys(issueDays).length);
+  var minimalDays = Math.max(0, period.spanDays - Object.keys(issueDays).length);
 
-  var drafts = generateWeeklyDrafts(byBehavior, weekStart);
+  var drafts = generateWeeklyDrafts(byBehavior, period);
+  var written = writeDraftColumn(grid, loc, period, drafts, minimalDays);
 
-  var grid = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(body.gridSheet || GRID_SHEET_NAME);
-  if (!grid) return jsonResponse({ ok: false, error: "Grid sheet not found" });
-  var written = writeDraftColumn(grid, weekStart, drafts, minimalDays);
-
-  return jsonResponse({ ok: true, week: dateKey(weekStart), drafted: Object.keys(drafts).length, written: written, minimalDays: minimalDays, drafts: drafts });
+  return jsonResponse({ ok: true, period: fmtDate(period.start) + " → " + period.label,
+    spanDays: period.spanDays, drafted: Object.keys(drafts).length, written: written,
+    minimalDays: minimalDays, drafts: drafts });
 }
 
-// 7 for a completed week; days elapsed (Mon→today) for the current week.
-function weekSpanDaysFor(weekStart, weekEnd) {
-  var now = new Date();
-  if (weekEnd <= now) return 7;
-  var a = new Date(weekStart); a.setHours(0, 0, 0, 0);
-  var b = new Date(now); b.setHours(0, 0, 0, 0);
-  return Math.min(7, Math.max(1, Math.floor((b - a) / 86400000) + 1));
+// Resolve the period to summarize: explicit {start,end} > {weekStart} > since-last-column.
+function resolvePeriod(body, loc) {
+  var start, endIncl;
+  if (body.start && body.end) {
+    start = parseLocalDate(body.start);
+    endIncl = parseLocalDate(body.end);
+  } else if (body.weekStart) {
+    start = mondayOf(new Date(body.weekStart));
+    endIncl = new Date(start); endIncl.setDate(endIncl.getDate() + 6);
+  } else {
+    endIncl = midnight(new Date());
+    var prev = latestGridDateBefore(loc, endIncl);
+    start = prev ? new Date(prev.getTime() + 86400000) : new Date(endIncl.getTime() - 6 * 86400000);
+  }
+  start = midnight(start); endIncl = midnight(endIncl);
+  if (start > endIncl) start = new Date(endIncl);
+  var endExcl = new Date(endIncl); endExcl.setDate(endExcl.getDate() + 1);
+  return { start: start, endIncl: endIncl, endExcl: endExcl,
+    spanDays: Math.round((endIncl - start) / 86400000) + 1, label: fmtDate(endIncl) };
 }
 
-// One Claude call for the whole week; returns { behavior: {severity, summary} }.
-function generateWeeklyDrafts(byBehavior, weekStart) {
+function midnight(d) { var x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function fmtDate(d) { return Utilities.formatDate(d, Session.getScriptTimeZone(), "dd/MM/yyyy"); }
+function parseLocalDate(s) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return midnight(new Date(s + "T00:00:00"));
+  return midnight(new Date(s));
+}
+
+// Latest existing grid date column strictly before `endIncl` (so re-runs ignore today's column).
+function latestGridDateBefore(loc, endIncl) {
+  var headerVals = loc.values[loc.headerRow] || [];
+  var latest = null;
+  loc.dateCols.forEach(function (c) {
+    var ds = parseGridDate(headerVals[c]);
+    if (!ds) return;
+    var d = midnight(new Date(ds + "T00:00:00"));
+    if (d < endIncl && (!latest || d > latest)) latest = d;
+  });
+  return latest;
+}
+
+// One Claude call for the whole period; returns { behavior: {severity, summary} }.
+function generateWeeklyDrafts(byBehavior, period) {
   var lines = [];
   Object.keys(byBehavior).forEach(function (beh) {
     lines.push("## " + beh);
@@ -282,7 +317,7 @@ function generateWeeklyDrafts(byBehavior, weekStart) {
     "Base severity on the week as a whole, weighting Issue/Incident days heavily.\n\n" +
     "Return ONLY a JSON object mapping each behavior name exactly as given to " +
     "{\"severity\": \"green|yellow|orange|red|none\", \"summary\": \"...\"}. No prose, no code fences.\n\n" +
-    "Week of " + dateKey(weekStart) + "\n\n" + lines.join("\n");
+    "Period: " + fmtDate(period.start) + " to " + period.label + "\n\n" + lines.join("\n");
 
   var text = callClaude(prompt);
   // Strip accidental code fences before parsing.
@@ -324,28 +359,23 @@ function callClaude(prompt) {
     .map(function (b) { return b.text; }).join("");
 }
 
-// Write the week's draft column. Reuses this week's column if one exists
-// (idempotent), else places it flush after the last date column (no gap).
-// Clears the column's behavior cells first so stale content never lingers.
-function writeDraftColumn(grid, weekStart, drafts, minimalDays) {
-  var loc = locateGrid(grid);
-  if (!loc) throw new Error("Could not locate the grid's behavior rows.");
+// Write the period's draft column. Reuses the column whose header matches the
+// period's end date (idempotent), else places it flush after the last date
+// column. Clears the column's behavior cells first so stale content never lingers.
+function writeDraftColumn(grid, loc, period, drafts, minimalDays) {
   var values = loc.values;
-  var weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
-  var label = Utilities.formatDate(weekEnd, Session.getScriptTimeZone(), "dd/MM/yyyy");
+  var label = period.label;
 
-  // Reuse this week's column if its header already exists.
   var headerRowVals = values[loc.headerRow] || [];
   var col = -1;
   for (var i = 0; i < headerRowVals.length; i++) {
     var hv = headerRowVals[i];
-    var hs = (hv instanceof Date) ? Utilities.formatDate(hv, Session.getScriptTimeZone(), "dd/MM/yyyy") : String(hv).trim();
+    var hs = (hv instanceof Date) ? fmtDate(hv) : String(hv).trim();
     if (hs === label) { col = i + 1; break; }
   }
   if (col < 0) {
-    // First empty column at/after the column following the last date column.
     var behRowIdxs = Object.keys(loc.behaviorRows).map(function (k) { return loc.behaviorRows[k]; });
-    var c = Math.max.apply(null, loc.dateCols) + 1; // 0-based
+    var c = Math.max.apply(null, loc.dateCols) + 1; // 0-based, after last date col
     for (var guard = 0; guard < 16; guard++, c++) {
       var occupied = false;
       for (var j = 0; j < behRowIdxs.length; j++) {
@@ -358,7 +388,7 @@ function writeDraftColumn(grid, weekStart, drafts, minimalDays) {
   }
 
   PropertiesService.getScriptProperties().setProperties({
-    DRAFT_GRID: grid.getName(), DRAFT_COL: String(col), DRAFT_WEEK: weekStart.toISOString(),
+    DRAFT_GRID: grid.getName(), DRAFT_COL: String(col), DRAFT_WEEK: period.start.toISOString(),
   }, false);
 
   var palette = sampleGridPalette(grid, col);
@@ -369,7 +399,10 @@ function writeDraftColumn(grid, weekStart, drafts, minimalDays) {
   });
   grid.getRange(loc.headerRow + 1, col).setValue(label).setFontWeight("bold");
   if (loc.minimalRow >= 0) {
-    grid.getRange(loc.minimalRow + 1, col).setNumberFormat("0").setValue(minimalDays);
+    var mcell = grid.getRange(loc.minimalRow + 1, col);
+    mcell.setNumberFormat("0");   // force an integer cell so the count isn't shown as a date
+    mcell.setValue(minimalDays);
+    mcell.setNumberFormat("0");
   }
 
   var written = 0;

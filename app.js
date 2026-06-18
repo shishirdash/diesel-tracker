@@ -684,11 +684,14 @@ async function closeOutWeek() {
   const { scriptUrl, scriptToken } = store.settings;
   const msg = $("closeWeekMsg");
   if (!scriptUrl) { msg.textContent = "Connect the sheet in Settings first."; return; }
-  msg.textContent = "Drafting this week's column from the logs…";
-  const weekStart = startOfWeek(Date.now()).toISOString();
+  const from = $("draftFrom").value, to = $("draftTo").value;
+  if ((from && !to) || (to && !from)) { msg.textContent = "Set both From and To, or leave both blank."; return; }
+  const payload = { token: scriptToken || "", action: "weeklyDraft" };
+  if (from && to) { payload.start = from; payload.end = to; }
+  msg.textContent = from && to ? "Drafting the column for that range…" : "Drafting the column since the last update…";
   try {
-    const data = await postJson(scriptUrl, { token: scriptToken || "", action: "weeklyDraft", weekStart });
-    msg.textContent = `Drafted ${data.written} behaviors into a new Psych column (week of ${data.week}). Review and edit it in the sheet.`;
+    const data = await postJson(scriptUrl, payload);
+    msg.textContent = `Drafted ${data.written} behavior${data.written === 1 ? "" : "s"} (${data.period}); minimal-reactivity days ${data.minimalDays}. Review and edit it in the sheet.`;
   } catch (err) {
     msg.textContent = `Draft failed: ${err.message}`;
   }
