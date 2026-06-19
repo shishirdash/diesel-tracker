@@ -680,6 +680,30 @@ async function syncNow({ silent = false } = {}) {
   }
 }
 
+// Minimal-reactivity days over an arbitrary [from, to] range, from local logs.
+function calcMinimalRange() {
+  const out = $("mrResult");
+  const fromStr = $("mrFrom").value, toStr = $("mrTo").value;
+  if (!fromStr || !toStr) { out.textContent = "Pick both dates."; return; }
+  const from = new Date(fromStr + "T00:00:00");
+  const to = new Date(toStr + "T00:00:00");
+  if (from > to) { out.textContent = "From must be on or before To."; return; }
+  const toExcl = new Date(to.getTime() + 86400000);
+  const issueDays = new Set();
+  for (const e of activeEntries()) {
+    if (canonCategory(e.category) !== REACTIVITY_CATEGORY) continue;
+    const rank = SEVERITY_RANK[e.severity];
+    if (rank === undefined || rank < REACTIVITY_ISSUE_RANK) continue;
+    const t = new Date(e.ts);
+    if (t < from || t >= toExcl) continue;
+    issueDays.add(dayKey(e.ts));
+  }
+  const span = Math.round((to - from) / 86400000) + 1;
+  const minimal = Math.max(0, span - issueDays.size);
+  out.textContent = `${minimal} minimal-reactivity days — ${span} day${span === 1 ? "" : "s"} in range, ` +
+    `${issueDays.size} with a reactivity Issue/Incident.`;
+}
+
 async function closeOutWeek() {
   const { scriptUrl, scriptToken } = store.settings;
   const msg = $("closeWeekMsg");
@@ -810,6 +834,9 @@ function init() {
   $("markCalmBtn").addEventListener("click", () => markDay("green"));
   $("markIssueBtn").addEventListener("click", () => markDay("orange"));
   $("closeWeekBtn").addEventListener("click", closeOutWeek);
+  $("mrTo").value = toLocalInput(Date.now()).slice(0, 10);
+  $("mrFrom").value = toLocalInput(Date.now() - 6 * 86400000).slice(0, 10);
+  $("mrCalcBtn").addEventListener("click", calcMinimalRange);
 
   $("saveEntryBtn").addEventListener("click", saveEntry);
   $("cancelEntryBtn").addEventListener("click", closeSheet);

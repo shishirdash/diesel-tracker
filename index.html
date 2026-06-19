@@ -55,6 +55,20 @@
       </div>
 
       <div class="daymark">
+        <div class="daymark-label">Minimal-reactivity days in a range
+          <p class="hint" style="font-weight:400;margin:2px 0 0">Days with no reactivity Issue/Incident over a date range you pick — computed live from your logs.</p>
+        </div>
+        <div class="daymark-btns" style="flex-direction:column;align-items:stretch;gap:6px">
+          <div style="display:flex;gap:6px">
+            <input type="date" id="mrFrom" aria-label="From" />
+            <input type="date" id="mrTo" aria-label="To" />
+          </div>
+          <button id="mrCalcBtn" class="secondary">Calculate</button>
+        </div>
+      </div>
+      <p id="mrResult" class="hint"></p>
+
+      <div class="daymark">
         <label class="daymark-label">Mark a day
           <input type="date" id="dayMarkDate" />
         </label>
