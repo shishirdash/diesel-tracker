@@ -126,6 +126,9 @@ code { background: #e2e8f0; padding: 1px 4px; border-radius: 4px; }
 .sheet h2 { margin: 0 0 2px; font-size: 1.1rem; }
 .sheet .hint { margin: 0 0 14px; }
 
+.entry-class { display: flex; gap: 8px; margin-bottom: 12px; }
+.entry-class label { flex: 1; margin-bottom: 0; font-size: 0.8rem; font-weight: 600; color: var(--muted); }
+
 .severity-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
 .sev {
   border: 2px solid transparent;

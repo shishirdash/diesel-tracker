@@ -43,6 +43,8 @@ const store = {
     return t ? JSON.parse(t) : DEFAULT_TAXONOMY.map((g) => ({ category: g.category, behaviors: g.behaviors.slice() }));
   },
   set taxonomy(v) { localStorage.setItem("taxonomy", JSON.stringify(v)); },
+  get taxonomyUpdatedAt() { return localStorage.getItem("taxonomyUpdatedAt") || ""; },
+  set taxonomyUpdatedAt(v) { localStorage.setItem("taxonomyUpdatedAt", v); },
 };
 
 let currentSelection = null; // { category, behavior }
@@ -84,12 +86,33 @@ function toLocalInput(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function fillSelect(sel, values, selected) {
+  let opts = values.slice();
+  if (selected && !opts.includes(selected)) opts = [selected, ...opts];
+  sel.innerHTML = "";
+  for (const v of opts) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = v;
+    if (v === selected) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+// Populate the category/behavior selects and sync currentSelection.
+function setEntryClass(category, behavior) {
+  const tax = store.taxonomy;
+  fillSelect($("entryCategory"), tax.map((g) => g.category), category);
+  const g = tax.find((x) => x.category === $("entryCategory").value);
+  fillSelect($("entryBehavior"), g ? g.behaviors : [], behavior);
+  currentSelection = { category: $("entryCategory").value, behavior: $("entryBehavior").value };
+}
+
 function openSheet(category, behavior) {
   editingId = null;
-  currentSelection = { category, behavior };
   currentSeverity = null;
-  $("sheetTitle").textContent = behavior;
-  $("sheetSubtitle").textContent = category;
+  $("sheetTitle").textContent = "Log entry";
+  $("sheetSubtitle").textContent = "";
+  setEntryClass(category, behavior);
   $("noteInput").value = "";
   $("entryWhen").value = toLocalInput(Date.now());
   document.querySelectorAll(".sev").forEach((b) => b.classList.remove("selected"));
@@ -100,10 +123,10 @@ function openSheet(category, behavior) {
 
 function openEditSheet(entry) {
   editingId = entry.id;
-  currentSelection = { category: entry.category, behavior: entry.behavior };
   currentSeverity = entry.severity;
-  $("sheetTitle").textContent = "Edit: " + entry.behavior;
-  $("sheetSubtitle").textContent = entry.category;
+  $("sheetTitle").textContent = "Edit entry";
+  $("sheetSubtitle").textContent = "";
+  setEntryClass(entry.category, entry.behavior);
   $("noteInput").value = entry.note || "";
   $("entryWhen").value = toLocalInput(entry.ts);
   document.querySelectorAll(".sev").forEach((b) =>
@@ -128,7 +151,10 @@ function saveEntry() {
   const now = new Date().toISOString();
   if (editingId) {
     store.entries = store.entries.map((e) =>
-      e.id === editingId ? { ...e, severity: currentSeverity, note, ts, updatedAt: now, synced: false } : e);
+      e.id === editingId
+        ? { ...e, category: currentSelection.category, behavior: currentSelection.behavior,
+            severity: currentSeverity, note, ts, updatedAt: now, synced: false }
+        : e);
     toast("Entry updated.");
   } else {
     const entry = {
@@ -676,6 +702,17 @@ async function syncNow({ silent = false } = {}) {
       lastPull: pulled.now || new Date().toISOString(),
       lastSync: new Date().toISOString(),
     };
+    // 3. Reconcile the shared behavior-class list (last-write-wins).
+    const cfg = await postJson(scriptUrl, {
+      token: scriptToken || "", action: "config",
+      taxonomy: store.taxonomy, taxonomyUpdatedAt: store.taxonomyUpdatedAt,
+    });
+    if (cfg.taxonomy && cfg.taxonomyUpdatedAt && cfg.taxonomyUpdatedAt !== store.taxonomyUpdatedAt) {
+      store.taxonomy = cfg.taxonomy;
+      store.taxonomyUpdatedAt = cfg.taxonomyUpdatedAt;
+      renderBehaviorList();
+      renderTaxonomyEditor();
+    }
     if (!silent) toast(`Synced — ${pending.length} sent, ${remote.length} received.`);
     refreshPendingBadge();
     renderHistory();
@@ -790,10 +827,12 @@ function saveSettings() {
 /* ---------- Behavior classes (editable taxonomy) ---------- */
 function commitTaxonomy(tax) {
   store.taxonomy = tax;
+  store.taxonomyUpdatedAt = new Date().toISOString();
   renderBehaviorList();
   renderTaxonomyEditor();
   renderHistory();
   renderInsights();
+  syncNow({ silent: true }); // pushes the new taxonomy + any relabeled entries
 }
 
 // Relabel matching entries (rename propagation); marks them for re-sync.
@@ -808,7 +847,6 @@ function relabelEntries(match, transform) {
   if (changed) {
     store.entries = next;
     refreshPendingBadge();
-    syncNow({ silent: true });
   }
 }
 
@@ -972,6 +1010,11 @@ function init() {
   $("mrTo").value = toLocalInput(Date.now()).slice(0, 10);
   $("mrFrom").value = toLocalInput(Date.now() - 6 * 86400000).slice(0, 10);
   $("mrCalcBtn").addEventListener("click", calcMinimalRange);
+
+  $("entryCategory").addEventListener("change", () => setEntryClass($("entryCategory").value, ""));
+  $("entryBehavior").addEventListener("change", () => {
+    currentSelection = { category: $("entryCategory").value, behavior: $("entryBehavior").value };
+  });
 
   $("saveEntryBtn").addEventListener("click", saveEntry);
   $("cancelEntryBtn").addEventListener("click", closeSheet);

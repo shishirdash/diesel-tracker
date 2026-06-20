@@ -55,6 +55,7 @@ function doPost(e) {
       case "pull":        return handlePull(body);
       case "import":      return handleImport(body);
       case "weeklyDraft": return handleWeeklyDraft(body);
+      case "config":      return handleConfig(body);
       default:            return jsonResponse({ ok: false, error: "Unknown action: " + body.action });
     }
   } catch (err) {
@@ -105,6 +106,24 @@ function handlePull(body) {
     return !since || new Date(r.updatedAt || 0) > since;
   });
   return jsonResponse({ ok: true, observations: rows, now: new Date().toISOString() });
+}
+
+/* ============================ shared config (taxonomy) ============================ */
+
+// Last-write-wins store for the editable behavior-class list, so every device
+// shares the same taxonomy. Send the local copy + its updatedAt; get the winner back.
+function handleConfig(body) {
+  var props = PropertiesService.getScriptProperties();
+  var storedJson = props.getProperty("TAXONOMY_JSON") || "";
+  var storedTs = props.getProperty("TAXONOMY_UPDATED_AT") || "";
+  var inTs = body.taxonomyUpdatedAt || "";
+  if (body.taxonomy && (!storedTs || (inTs && inTs > storedTs))) {
+    storedJson = JSON.stringify(body.taxonomy);
+    storedTs = inTs || new Date().toISOString();
+    props.setProperty("TAXONOMY_JSON", storedJson);
+    props.setProperty("TAXONOMY_UPDATED_AT", storedTs);
+  }
+  return jsonResponse({ ok: true, taxonomy: storedJson ? JSON.parse(storedJson) : null, taxonomyUpdatedAt: storedTs });
 }
 
 /* ============================ import historical grid ============================ */
