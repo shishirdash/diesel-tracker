@@ -140,6 +140,16 @@
         Safe to run more than once; it won't overwrite rows you've edited.</p>
       <button id="importHistoryBtn" class="secondary">Import sheet history</button>
       <p id="importMsg" class="hint"></p>
+
+      <h2>Behavior classes</h2>
+      <p class="hint">Add, rename, or remove the categories and behaviors you log against.
+        Renaming relabels matching past logs (and re-syncs them); removing keeps the logs but
+        drops the class from the picker.</p>
+      <div id="taxonomyEditor"></div>
+      <div class="tax-add">
+        <input type="text" id="newCategory" placeholder="New category name" />
+        <button id="addCategoryBtn" class="secondary">Add category</button>
+      </div>
     </section>
   </main>
 

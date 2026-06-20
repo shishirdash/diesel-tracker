@@ -1,6 +1,6 @@
 /* Diesel Tracker — offline-first behavior logger that syncs to Google Sheets. */
 
-const TAXONOMY = [
+const DEFAULT_TAXONOMY = [
   { category: "Touch sensitivity", behaviors: ["Head", "Fore paws", "Hind paws", "Other body parts"] },
   { category: "Guarding", behaviors: ["Ball / toys", "Indoor floor trash", "Food"] },
   { category: "Leash pulling", behaviors: ["Before play", "After play", "Tasty trash"] },
@@ -15,8 +15,9 @@ const SEVERITY_LABELS = { green: "Good", yellow: "Watch", orange: "Issue", red: 
 // app's canonical taxonomy names so imported rows line up with app-logged ones.
 function canonCategory(cat) {
   if (!cat) return cat;
-  for (const g of TAXONOMY) if (g.category === cat) return g.category;
-  for (const g of TAXONOMY) if (cat.indexOf(g.category) === 0) return g.category;
+  const tax = store.taxonomy;
+  for (const g of tax) if (g.category === cat) return g.category;
+  for (const g of tax) if (cat.indexOf(g.category) === 0) return g.category;
   return cat;
 }
 
@@ -36,6 +37,12 @@ const store = {
   // Manual per-week overrides of the minimal-reactivity-days number, keyed by week-start ms.
   get weekOverrides() { return JSON.parse(localStorage.getItem("weekOverrides") || "{}"); },
   set weekOverrides(v) { localStorage.setItem("weekOverrides", JSON.stringify(v)); },
+  // Editable behavior classes; seeds from the default the first time.
+  get taxonomy() {
+    const t = localStorage.getItem("taxonomy");
+    return t ? JSON.parse(t) : DEFAULT_TAXONOMY.map((g) => ({ category: g.category, behaviors: g.behaviors.slice() }));
+  },
+  set taxonomy(v) { localStorage.setItem("taxonomy", JSON.stringify(v)); },
 };
 
 let currentSelection = null; // { category, behavior }
@@ -49,7 +56,7 @@ const $ = (id) => document.getElementById(id);
 function renderBehaviorList() {
   const container = $("behaviorList");
   container.innerHTML = "";
-  for (const group of TAXONOMY) {
+  for (const group of store.taxonomy) {
     const section = document.createElement("div");
     section.className = "category";
     const h = document.createElement("h2");
@@ -359,7 +366,7 @@ function renderBehaviorGrid(sortedWeeks) {
   });
   table.appendChild(head);
 
-  for (const group of TAXONOMY) {
+  for (const group of store.taxonomy) {
     const cat = document.createElement("div");
     cat.className = "bt-cat";
     cat.textContent = group.category;
@@ -493,7 +500,7 @@ function renderInsights() {
       if (SEVERITY_RANK[e.severity] > SEVERITY_RANK[cur.worst]) cur.worst = e.severity;
       byBehavior.set(k, cur);
     }
-    for (const group of TAXONOMY) {
+    for (const group of store.taxonomy) {
       const rows = group.behaviors
         .map((b) => ({ behavior: b, stat: byBehavior.get(group.category + " " + b) }))
         .filter((r) => r.stat);
@@ -780,6 +787,133 @@ function saveSettings() {
   toast("Settings saved.");
 }
 
+/* ---------- Behavior classes (editable taxonomy) ---------- */
+function commitTaxonomy(tax) {
+  store.taxonomy = tax;
+  renderBehaviorList();
+  renderTaxonomyEditor();
+  renderHistory();
+  renderInsights();
+}
+
+// Relabel matching entries (rename propagation); marks them for re-sync.
+function relabelEntries(match, transform) {
+  const now = new Date().toISOString();
+  let changed = false;
+  const next = store.entries.map((e) => {
+    if (!match(e)) return e;
+    changed = true;
+    return { ...e, ...transform(e), updatedAt: now, synced: false };
+  });
+  if (changed) {
+    store.entries = next;
+    refreshPendingBadge();
+    syncNow({ silent: true });
+  }
+}
+
+function addCategory() {
+  const name = ($("newCategory").value || "").trim();
+  if (!name) return;
+  const tax = store.taxonomy;
+  if (tax.some((g) => g.category.toLowerCase() === name.toLowerCase())) { toast("That category already exists."); return; }
+  tax.push({ category: name, behaviors: [] });
+  $("newCategory").value = "";
+  commitTaxonomy(tax);
+  toast("Category added.");
+}
+
+function addBehavior(cat) {
+  const name = (prompt(`New behavior in “${cat}”:`) || "").trim();
+  if (!name) return;
+  const tax = store.taxonomy;
+  const g = tax.find((x) => x.category === cat);
+  if (!g) return;
+  if (g.behaviors.some((b) => b.toLowerCase() === name.toLowerCase())) { toast("That behavior already exists."); return; }
+  g.behaviors.push(name);
+  commitTaxonomy(tax);
+}
+
+function renameCategory(oldName) {
+  const newName = (prompt("Rename category:", oldName) || "").trim();
+  if (!newName || newName === oldName) return;
+  const tax = store.taxonomy;
+  if (tax.some((g) => g.category.toLowerCase() === newName.toLowerCase())) { toast("That category already exists."); return; }
+  // Relabel logs first (taxonomy still holds the old name so variants fold correctly).
+  relabelEntries((e) => canonCategory(e.category) === oldName, () => ({ category: newName }));
+  const g = tax.find((x) => x.category === oldName);
+  if (g) g.category = newName;
+  commitTaxonomy(tax);
+  toast("Renamed.");
+}
+
+function renameBehavior(cat, oldB) {
+  const newB = (prompt("Rename behavior:", oldB) || "").trim();
+  if (!newB || newB === oldB) return;
+  const tax = store.taxonomy;
+  const g = tax.find((x) => x.category === cat);
+  if (!g) return;
+  if (g.behaviors.some((b) => b.toLowerCase() === newB.toLowerCase())) { toast("That behavior already exists."); return; }
+  relabelEntries((e) => canonCategory(e.category) === cat && e.behavior === oldB, () => ({ behavior: newB }));
+  g.behaviors = g.behaviors.map((b) => (b === oldB ? newB : b));
+  commitTaxonomy(tax);
+  toast("Renamed.");
+}
+
+function removeCategory(cat) {
+  if (!confirm(`Remove “${cat}” from the picker? Past logs are kept.`)) return;
+  commitTaxonomy(store.taxonomy.filter((g) => g.category !== cat));
+}
+
+function removeBehavior(cat, b) {
+  if (!confirm(`Remove “${b}” from the picker? Past logs are kept.`)) return;
+  const tax = store.taxonomy;
+  const g = tax.find((x) => x.category === cat);
+  if (g) g.behaviors = g.behaviors.filter((x) => x !== b);
+  commitTaxonomy(tax);
+}
+
+function taxBtn(label, title, cls, onClick) {
+  const el = document.createElement("button");
+  el.className = cls;
+  el.textContent = label;
+  el.title = title;
+  el.addEventListener("click", onClick);
+  return el;
+}
+
+function renderTaxonomyEditor() {
+  const root = $("taxonomyEditor");
+  if (!root) return;
+  root.innerHTML = "";
+  for (const group of store.taxonomy) {
+    const cat = document.createElement("div");
+    cat.className = "tax-cat";
+    const head = document.createElement("div");
+    head.className = "tax-row tax-cat-head";
+    const name = document.createElement("span");
+    name.className = "tax-name";
+    name.textContent = group.category;
+    head.appendChild(name);
+    head.appendChild(taxBtn("✎", "Rename category", "tax-mini", () => renameCategory(group.category)));
+    head.appendChild(taxBtn("+", "Add behavior", "tax-mini", () => addBehavior(group.category)));
+    head.appendChild(taxBtn("✕", "Remove category", "tax-mini", () => removeCategory(group.category)));
+    cat.appendChild(head);
+    for (const b of group.behaviors) {
+      const row = document.createElement("div");
+      row.className = "tax-row tax-beh";
+      const bn = document.createElement("span");
+      bn.className = "tax-name";
+      bn.textContent = b;
+      row.appendChild(bn);
+      row.appendChild(taxBtn("✎", "Rename behavior", "tax-mini", () => renameBehavior(group.category, b)));
+      row.appendChild(taxBtn("✕", "Remove behavior", "tax-mini", () => removeBehavior(group.category, b)));
+      cat.appendChild(row);
+    }
+    root.appendChild(cat);
+  }
+}
+
 /* ---------- Misc ---------- */
 let toastTimer = null;
 function toast(text) {
@@ -817,6 +951,7 @@ function init() {
   renderInsights();
   refreshPendingBadge();
   loadSettingsForm();
+  renderTaxonomyEditor();
   scheduleAutoSync();
 
   document.querySelectorAll(".tab").forEach((t) =>
@@ -846,6 +981,7 @@ function init() {
   $("testSyncBtn").addEventListener("click", testConnection);
   $("importHistoryBtn").addEventListener("click", importHistory);
   $("exportCsvBtn").addEventListener("click", exportCsv);
+  $("addCategoryBtn").addEventListener("click", addCategory);
 
   window.addEventListener("online", () => syncNow({ silent: true }));
   document.addEventListener("visibilitychange", () => {

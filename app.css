@@ -320,6 +320,24 @@ button.secondary { background: #e2e8f0; color: var(--text); }
   padding: 4px 8px; font-size: 1rem;
 }
 
+/* Behavior-class editor */
+.tax-cat { margin-bottom: 12px; }
+.tax-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border: 1px solid #e2e8f0; border-radius: var(--radius);
+  margin-bottom: 4px; background: var(--card);
+}
+.tax-cat-head { background: #eef2ff; }
+.tax-cat-head .tax-name { font-weight: 700; }
+.tax-beh { margin-left: 16px; }
+.tax-name { flex: 1; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tax-mini {
+  background: none; color: var(--muted);
+  padding: 2px 8px; font-size: 0.95rem; border-radius: 6px;
+}
+.tax-add { display: flex; gap: 8px; margin-top: 8px; }
+.tax-add input { margin-top: 0; }
+
 /* Tab bar */
 .tabbar {
   position: fixed;
