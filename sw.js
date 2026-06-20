@@ -1,4 +1,4 @@
-const CACHE = "diesel-tracker-v14";
+const CACHE = "diesel-tracker-v15";
 const ASSETS = [
   "./",
   "./index.html",

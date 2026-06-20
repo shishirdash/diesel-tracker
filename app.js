@@ -861,6 +861,18 @@ function addCategory() {
   toast("Category added.");
 }
 
+// Best-effort propagation of a class edit into the sheet's Psych grid.
+async function pushClassEdit(op) {
+  const { scriptUrl, scriptToken } = store.settings;
+  if (!scriptUrl) return;
+  if (!navigator.onLine) { toast("Offline — Psych grid not updated yet."); return; }
+  try {
+    await postJson(scriptUrl, { token: scriptToken || "", action: "classEdit", ...op });
+  } catch (err) {
+    toast("Psych grid not updated: " + err.message);
+  }
+}
+
 function addBehavior(cat) {
   const name = (prompt(`New behavior in “${cat}”:`) || "").trim();
   if (!name) return;
@@ -870,6 +882,7 @@ function addBehavior(cat) {
   if (g.behaviors.some((b) => b.toLowerCase() === name.toLowerCase())) { toast("That behavior already exists."); return; }
   g.behaviors.push(name);
   commitTaxonomy(tax);
+  pushClassEdit({ op: "addBehavior", category: cat, behavior: name });
 }
 
 function renameCategory(oldName) {
@@ -882,6 +895,7 @@ function renameCategory(oldName) {
   const g = tax.find((x) => x.category === oldName);
   if (g) g.category = newName;
   commitTaxonomy(tax);
+  pushClassEdit({ op: "renameCategory", from: oldName, to: newName });
   toast("Renamed.");
 }
 
@@ -895,6 +909,7 @@ function renameBehavior(cat, oldB) {
   relabelEntries((e) => canonCategory(e.category) === cat && e.behavior === oldB, () => ({ behavior: newB }));
   g.behaviors = g.behaviors.map((b) => (b === oldB ? newB : b));
   commitTaxonomy(tax);
+  pushClassEdit({ op: "renameBehavior", category: cat, from: oldB, to: newB });
   toast("Renamed.");
 }
 

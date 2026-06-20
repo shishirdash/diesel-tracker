@@ -56,6 +56,7 @@ function doPost(e) {
       case "import":      return handleImport(body);
       case "weeklyDraft": return handleWeeklyDraft(body);
       case "config":      return handleConfig(body);
+      case "classEdit":   return handleClassEdit(body);
       default:            return jsonResponse({ ok: false, error: "Unknown action: " + body.action });
     }
   } catch (err) {
@@ -124,6 +125,85 @@ function handleConfig(body) {
     props.setProperty("TAXONOMY_UPDATED_AT", storedTs);
   }
   return jsonResponse({ ok: true, taxonomy: storedJson ? JSON.parse(storedJson) : null, taxonomyUpdatedAt: storedTs });
+}
+
+/* ============================ propagate class edits to the grid ============================ */
+
+// One-way app → Psych: rename labels in place, or insert a row for a new behavior.
+function handleClassEdit(body) {
+  var grid = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(body.gridSheet || GRID_SHEET_NAME);
+  if (!grid) return jsonResponse({ ok: false, error: "Grid sheet not found" });
+  var loc = locateGrid(grid);
+  if (!loc) return jsonResponse({ ok: false, error: "Could not locate the grid layout." });
+  if (loc.behaviorCol < 0) return jsonResponse({ ok: false, error: "Could not find the behavior label column." });
+
+  switch (body.op) {
+    case "renameBehavior": return classRenameBehavior(grid, loc, body.from, body.to);
+    case "renameCategory": return classRenameCategory(grid, loc, body.from, body.to);
+    case "addBehavior":    return classAddBehavior(grid, loc, body.category, body.behavior);
+    default:               return jsonResponse({ ok: false, error: "Unknown class op: " + body.op });
+  }
+}
+
+function classRenameBehavior(grid, loc, from, to) {
+  var rowIdx = loc.behaviorRows[String(from).toLowerCase()];
+  if (rowIdx === undefined) return jsonResponse({ ok: false, error: "Behavior not in grid: " + from });
+  grid.getRange(rowIdx + 1, loc.behaviorCol + 1).setValue(to);
+  return jsonResponse({ ok: true, op: "renameBehavior", row: rowIdx + 1 });
+}
+
+// Rename the category label cell, preserving any trailing qualifier (e.g. "(non-prong)").
+function classRenameCategory(grid, loc, from, to) {
+  if (loc.categoryCol < 0) return jsonResponse({ ok: false, error: "Could not find the category label column." });
+  var values = loc.values, cc = loc.categoryCol, fromL = String(from).toLowerCase();
+  for (var r = loc.headerRow + 1; r < values.length; r++) {
+    var v = String(values[r][cc] || "").trim();
+    if (v && v.toLowerCase().indexOf(fromL) === 0) {
+      var newVal = to + v.substring(String(from).length);
+      grid.getRange(r + 1, cc + 1).setValue(newVal);
+      return jsonResponse({ ok: true, op: "renameCategory", from: v, to: newVal, row: r + 1 });
+    }
+  }
+  return jsonResponse({ ok: false, error: "Category not in grid: " + from });
+}
+
+// Insert a behavior row. If the category exists, add to its group (extending the
+// merged category label); otherwise append a new labelled row at the bottom.
+function classAddBehavior(grid, loc, category, behavior) {
+  var bc = loc.behaviorCol, cc = loc.categoryCol, catL = String(category).toLowerCase();
+  var groupRows = [], lastBehaviorRow = loc.headerRow + 1;
+  Object.keys(loc.rowInfo).forEach(function (k) {
+    var ri = Number(k);
+    if (ri > lastBehaviorRow) lastBehaviorRow = ri;
+    var pc = String(loc.rowInfo[ri].category || "").toLowerCase();
+    if (pc && (pc.indexOf(catL) === 0 || catL.indexOf(pc) === 0)) groupRows.push(ri);
+  });
+
+  if (groupRows.length) {
+    var maxRow = Math.max.apply(null, groupRows);     // 0-based last row of the group
+    grid.insertRowsAfter(maxRow + 1, 1);
+    var newRow = maxRow + 2;                            // 1-based new row
+    grid.getRange(newRow, bc + 1).setValue(behavior);
+    if (cc >= 0) {
+      try {
+        var catCell = grid.getRange(groupRows[0] + 1, cc + 1);
+        var merges = catCell.getMergedRanges();
+        if (merges.length) {
+          var m = merges[0], rr = m.getRow(), nr = m.getNumRows(), col = m.getColumn(), ncol = m.getNumColumns();
+          m.breakApart();
+          grid.getRange(rr, col, nr + 1, ncol).merge();
+        }
+      } catch (e) { /* leave the merge as-is if it can't be extended */ }
+    }
+    return jsonResponse({ ok: true, op: "addBehavior", row: newRow });
+  }
+
+  // New category's first behavior: append a labelled row after the last behavior row.
+  grid.insertRowsAfter(lastBehaviorRow + 1, 1);
+  var appended = lastBehaviorRow + 2;
+  if (cc >= 0) grid.getRange(appended, cc + 1).setValue(category);
+  grid.getRange(appended, bc + 1).setValue(behavior);
+  return jsonResponse({ ok: true, op: "addBehavior", row: appended, newCategory: true });
 }
 
 /* ============================ import historical grid ============================ */
@@ -484,7 +564,7 @@ function locateGrid(grid) {
   }
 
   var firstDateCol = dateCols[0];
-  var behaviorRows = {}, rowInfo = {}, carriedCategory = "";
+  var behaviorRows = {}, rowInfo = {}, carriedCategory = "", behaviorCol = -1, categoryCol = -1;
   for (var rr = headerRow + 1; rr < values.length; rr++) {
     var behavior = "", behCol = -1;
     for (var bc = firstDateCol - 1; bc >= 0; bc--) {
@@ -492,17 +572,19 @@ function locateGrid(grid) {
       if (label) { behavior = label; behCol = bc; break; }
     }
     if (!behavior) continue;
+    if (behaviorCol < 0) behaviorCol = behCol;
     var category = carriedCategory;
     for (var cc = behCol - 1; cc >= 0; cc--) {
       var cv = String(values[rr][cc]).trim();
-      if (cv) { category = cv; break; }
+      if (cv) { category = cv; if (categoryCol < 0) categoryCol = cc; break; }
     }
     if (category) carriedCategory = category;
     behaviorRows[behavior.toLowerCase()] = rr;
     rowInfo[rr] = { behavior: behavior, category: category };
   }
   return { headerRow: headerRow, behaviorRows: behaviorRows, rowInfo: rowInfo,
-           dateCols: dateCols, minimalRow: minimalRow, values: values };
+           dateCols: dateCols, minimalRow: minimalRow, values: values,
+           behaviorCol: behaviorCol, categoryCol: categoryCol };
 }
 
 // Upsert the human/AI weekly assessment for one (week, behavior) into the SoT.
