@@ -51,6 +51,7 @@ let currentSelection = null; // { category, behavior }
 let currentSeverity = null;
 let editingId = null; // id of the entry being edited, or null for a new entry
 let autoSyncTimer = null;
+let reactPeriod = { mode: 7 }; // reactivity headline period: 7|30|90 days, 0=all, "custom"
 
 const $ = (id) => document.getElementById(id);
 
@@ -480,32 +481,10 @@ function renderInsights() {
     return key in overrides ? overrides[key] : s.minimal;
   };
 
-  // --- Reactivity estimate card ---
+  // --- Reactivity headline (single, period-controlled metric) ---
+  renderReactivity();
   const thisWeekStart = startOfWeek(Date.now());
-  const thisWeekKey = String(thisWeekStart.getTime());
   const thisWeek = weeks.get(thisWeekStart.getTime());
-  const tw = thisWeek
-    ? weekStats(thisWeek.entries, thisWeekStart)
-    : weekStats([], thisWeekStart);
-  const twMinimal = thisWeekKey in overrides ? overrides[thisWeekKey] : tw.minimal;
-  $("reactivityThisWeek").textContent = String(twMinimal);
-
-  const avgEl = $("reactivityAvg");
-  const completeWeeks = sortedWeeks.filter((w) => w.start.getTime() !== thisWeekStart.getTime());
-  // The headline average is measured-only — old assessment weeks are estimates
-  // and are kept out so the number stays honest.
-  const measuredComplete = completeWeeks.filter(isMeasuredWeek);
-  const subNote = `${tw.issueDays} issue day${tw.issueDays === 1 ? "" : "s"} of ${tw.span} so far this week`;
-  if (measuredComplete.length === 0) {
-    avgEl.innerHTML = `A tracked weekly average appears once you've logged a full week of daily entries.` +
-      `<br><span class="hint">${subNote} · earlier weeks below are severity-based estimates</span>`;
-  } else {
-    const avg = measuredComplete.reduce((s, w) => s + minimalFor(w), 0) / measuredComplete.length;
-    avgEl.innerHTML =
-      `<strong>≈ ${avg.toFixed(1)} days/week</strong> across ` +
-      `${measuredComplete.length} tracked week${measuredComplete.length === 1 ? "" : "s"}` +
-      `<br><span class="hint">${subNote}</span>`;
-  }
 
   // --- Behavior × week severity grid (the sheet's form, in spirit) ---
   renderBehaviorGrid(sortedWeeks);
@@ -724,28 +703,53 @@ async function syncNow({ silent = false } = {}) {
   }
 }
 
-// Minimal-reactivity days over an arbitrary [from, to] range, from local logs.
-function calcMinimalRange() {
-  const out = $("mrResult");
-  const fromStr = $("mrFrom").value, toStr = $("mrTo").value;
-  if (!fromStr || !toStr) { out.textContent = "Pick both dates."; return; }
-  const from = new Date(fromStr + "T00:00:00");
-  const to = new Date(toStr + "T00:00:00");
-  if (from > to) { out.textContent = "From must be on or before To."; return; }
+/* ---------- Reactivity headline (period-controlled) ---------- */
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+
+// Resolve the selected period to a {from, to} of local midnights, or null if incomplete.
+function reactRange() {
+  if (reactPeriod.mode === "custom") {
+    const f = $("reactFrom").value, t = $("reactTo").value;
+    if (!f || !t) return null;
+    const from = startOfDay(new Date(f + "T00:00:00")), to = startOfDay(new Date(t + "T00:00:00"));
+    return from > to ? null : { from, to };
+  }
+  const to = startOfDay(new Date());
+  if (reactPeriod.mode === 0) { // all time
+    const ents = activeEntries();
+    if (!ents.length) return { from: to, to };
+    const earliest = ents.reduce((m, e) => Math.min(m, new Date(e.ts).getTime()), Date.now());
+    return { from: startOfDay(new Date(earliest)), to };
+  }
+  return { from: startOfDay(new Date(Date.now() - (reactPeriod.mode - 1) * 86400000)), to };
+}
+
+function computeMinimalReact(from, to) {
   const toExcl = new Date(to.getTime() + 86400000);
-  const issueDays = new Set();
+  const issue = new Set();
   for (const e of activeEntries()) {
     if (canonCategory(e.category) !== REACTIVITY_CATEGORY) continue;
-    const rank = SEVERITY_RANK[e.severity];
-    if (rank === undefined || rank < REACTIVITY_ISSUE_RANK) continue;
+    const r = SEVERITY_RANK[e.severity];
+    if (r === undefined || r < REACTIVITY_ISSUE_RANK) continue;
     const t = new Date(e.ts);
     if (t < from || t >= toExcl) continue;
-    issueDays.add(dayKey(e.ts));
+    issue.add(dayKey(e.ts));
   }
   const span = Math.round((to - from) / 86400000) + 1;
-  const minimal = Math.max(0, span - issueDays.size);
-  out.textContent = `${minimal} minimal-reactivity days — ${span} day${span === 1 ? "" : "s"} in range, ` +
-    `${issueDays.size} with a reactivity Issue/Incident.`;
+  return { span, issueDays: issue.size, minimal: Math.max(0, span - issue.size) };
+}
+
+function renderReactivity() {
+  const big = $("reactBig"), sub = $("reactSub");
+  if (!big) return;
+  const rng = reactRange();
+  if (!rng) { big.textContent = "—"; sub.textContent = "Pick both dates."; return; }
+  const s = computeMinimalReact(rng.from, rng.to);
+  big.textContent = String(s.minimal);
+  const rate = s.span ? (s.minimal / s.span) * 7 : 0;
+  sub.innerHTML = `of ${s.span} day${s.span === 1 ? "" : "s"} · ` +
+    `${s.issueDays} reactivity issue day${s.issueDays === 1 ? "" : "s"} · ` +
+    `<strong>≈${rate.toFixed(1)}/week</strong>`;
 }
 
 async function closeOutWeek() {
@@ -1022,9 +1026,19 @@ function init() {
   $("markCalmBtn").addEventListener("click", () => markDay("green"));
   $("markIssueBtn").addEventListener("click", () => markDay("orange"));
   $("closeWeekBtn").addEventListener("click", closeOutWeek);
-  $("mrTo").value = toLocalInput(Date.now()).slice(0, 10);
-  $("mrFrom").value = toLocalInput(Date.now() - 6 * 86400000).slice(0, 10);
-  $("mrCalcBtn").addEventListener("click", calcMinimalRange);
+
+  document.querySelectorAll("#reactPeriod .chip-btn").forEach((b) =>
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#reactPeriod .chip-btn").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      reactPeriod.mode = b.dataset.days === "custom" ? "custom" : Number(b.dataset.days);
+      $("reactCustom").hidden = reactPeriod.mode !== "custom";
+      renderReactivity();
+    }));
+  $("reactTo").value = toLocalInput(Date.now()).slice(0, 10);
+  $("reactFrom").value = toLocalInput(Date.now() - 6 * 86400000).slice(0, 10);
+  $("reactFrom").addEventListener("change", renderReactivity);
+  $("reactTo").addEventListener("change", renderReactivity);
 
   $("entryCategory").addEventListener("change", () => setEntryClass($("entryCategory").value, ""));
   $("entryBehavior").addEventListener("change", () => {
