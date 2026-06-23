@@ -45,6 +45,9 @@ const store = {
   set taxonomy(v) { localStorage.setItem("taxonomy", JSON.stringify(v)); },
   get taxonomyUpdatedAt() { return localStorage.getItem("taxonomyUpdatedAt") || ""; },
   set taxonomyUpdatedAt(v) { localStorage.setItem("taxonomyUpdatedAt", v); },
+  // Cached mirror of the Psych grid (weeks + groups), refreshed on sync.
+  get psychGrid() { const t = localStorage.getItem("psychGrid"); return t ? JSON.parse(t) : null; },
+  set psychGrid(v) { localStorage.setItem("psychGrid", JSON.stringify(v)); },
 };
 
 let currentSelection = null; // { category, behavior }
@@ -329,51 +332,37 @@ function weekStats(entries, weekStart) {
   return { span, issueDays: issueDays.size, minimal, reactIssues, tracked: trackedDays.size, total: entries.length };
 }
 
-// Short week label like "9 Jun" from a week-start Date.
-function shortWeekLabel(weekStart) {
-  return weekStart.toLocaleDateString([], { day: "numeric", month: "short" });
+// Short label like "9 Jun" from a "yyyy-mm-dd" key.
+function shortDateLabel(key) {
+  return new Date(key + "T00:00:00").toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
-// Behavior × week grid: for each behavior, its worst severity per recent week.
-function renderBehaviorGrid(sortedWeeks) {
+// Behavior × week grid — a live mirror of the Psych grid (cached via pullGrid).
+function renderBehaviorGrid() {
   const grid = $("behaviorGrid");
   grid.innerHTML = "";
-  if (sortedWeeks.length === 0) {
-    grid.innerHTML = `<p class="hint">No weeks to show yet.</p>`;
+  const pg = store.psychGrid;
+  if (!pg || !pg.weeks || !pg.weeks.length) {
+    grid.innerHTML = `<p class="hint">Tap ⟳ to load the weekly grid from the Psych tab.</p>`;
     return;
   }
-  // Oldest → newest, last 10 weeks, so reading left→right matches the sheet.
-  const weeks = sortedWeeks.slice(0, 10).reverse();
+  const weekKeys = pg.weeks.slice(-12); // newest 12 assessment columns
 
-  // Per week: "category|behavior" -> { severity, note } using the worst severity.
-  const sevByWeek = new Map(); // week-start ms -> Map(key -> {severity, note})
-  for (const w of weeks) {
-    const m = new Map();
-    for (const e of w.entries) {
-      const rank = SEVERITY_RANK[e.severity];
-      if (rank === undefined) continue;
-      const k = canonCategory(e.category) + "|" + e.behavior;
-      const cur = m.get(k);
-      if (!cur || rank > SEVERITY_RANK[cur.severity]) m.set(k, { severity: e.severity, note: e.note || "" });
-    }
-    sevByWeek.set(w.start.getTime(), m);
-  }
-
-  // Build the column sequence, inserting a gap marker where weeks aren't
-  // consecutive so the timeline doesn't pretend a 3-month break was one week.
+  // Columns, with a gap marker where assessment dates aren't ~consecutive weeks.
   const cols = [];
-  weeks.forEach((w, i) => {
+  weekKeys.forEach((wk, i) => {
     if (i > 0) {
-      const skipped = Math.round((w.start - weeks[i - 1].start) / (7 * 86400000)) - 1;
+      const prev = new Date(weekKeys[i - 1] + "T00:00:00");
+      const cur = new Date(wk + "T00:00:00");
+      const skipped = Math.round((cur - prev) / (7 * 86400000)) - 1;
       if (skipped > 0) cols.push({ type: "gap", weeks: skipped });
     }
-    cols.push({ type: "week", w });
+    cols.push({ type: "week", key: wk });
   });
 
   const table = document.createElement("div");
   table.className = "bt-table";
 
-  // Header row.
   const head = document.createElement("div");
   head.className = "bt-row bt-head";
   const corner = document.createElement("span");
@@ -387,24 +376,23 @@ function renderBehaviorGrid(sortedWeeks) {
       c.title = col.weeks + " week" + (col.weeks === 1 ? "" : "s") + " with no check-in";
     } else {
       c.className = "bt-wk";
-      c.textContent = shortWeekLabel(col.w.start);
+      c.textContent = shortDateLabel(col.key);
     }
     head.appendChild(c);
   });
   table.appendChild(head);
 
-  for (const group of store.taxonomy) {
+  for (const group of pg.groups) {
     const cat = document.createElement("div");
     cat.className = "bt-cat";
     cat.textContent = group.category;
     table.appendChild(cat);
-    for (const behavior of group.behaviors) {
-      const k = group.category + "|" + behavior;
+    for (const beh of group.behaviors) {
       const row = document.createElement("div");
       row.className = "bt-row";
       const label = document.createElement("span");
       label.className = "bt-label";
-      label.textContent = behavior;
+      label.textContent = beh.behavior;
       row.appendChild(label);
       cols.forEach((col) => {
         if (col.type === "gap") {
@@ -414,13 +402,13 @@ function renderBehaviorGrid(sortedWeeks) {
           return;
         }
         const cell = document.createElement("span");
-        const hit = sevByWeek.get(col.w.start.getTime()).get(k);
-        cell.className = "bt-cell" + (hit ? " " + hit.severity : " bt-none");
-        if (hit) {
-          cell.title = hit.note;
+        const hit = beh.cells && beh.cells[col.key];
+        cell.className = "bt-cell" + (hit && hit.severity ? " " + hit.severity : " bt-none");
+        if (hit && (hit.note || hit.severity)) {
+          cell.title = hit.note || "";
           cell.addEventListener("click", () => {
-            const wk = shortWeekLabel(col.w.start);
-            toast(`${behavior} · ${wk}: ${SEVERITY_LABELS[hit.severity]}${hit.note ? " — " + hit.note : ""}`);
+            const sev = hit.severity ? SEVERITY_LABELS[hit.severity] : "—";
+            toast(`${beh.behavior} · ${shortDateLabel(col.key)}: ${sev}${hit.note ? " — " + hit.note : ""}`);
           });
         }
         row.appendChild(cell);
@@ -486,8 +474,8 @@ function renderInsights() {
   const thisWeekStart = startOfWeek(Date.now());
   const thisWeek = weeks.get(thisWeekStart.getTime());
 
-  // --- Behavior × week severity grid (the sheet's form, in spirit) ---
-  renderBehaviorGrid(sortedWeeks);
+  // --- Behavior × week grid: a live mirror of the Psych tab ---
+  renderBehaviorGrid();
 
   // --- This week, by behavior (mirrors the sheet's weekly summary) ---
   const weekSummary = $("weekSummary");
@@ -692,6 +680,11 @@ async function syncNow({ silent = false } = {}) {
       renderBehaviorList();
       renderTaxonomyEditor();
     }
+    // 4. Mirror the live Psych grid for the Behavior × week view.
+    try {
+      const gd = await postJson(scriptUrl, { token: scriptToken || "", action: "pullGrid" });
+      store.psychGrid = { weeks: gd.weeks || [], groups: gd.groups || [], at: new Date().toISOString() };
+    } catch (e) { /* keep the cached grid if pullGrid isn't available */ }
     if (!silent) toast(`Synced — ${pending.length} sent, ${remote.length} received.`);
     refreshPendingBadge();
     renderHistory();

@@ -57,6 +57,7 @@ function doPost(e) {
       case "weeklyDraft": return handleWeeklyDraft(body);
       case "config":      return handleConfig(body);
       case "classEdit":   return handleClassEdit(body);
+      case "pullGrid":    return handlePullGrid(body);
       default:            return jsonResponse({ ok: false, error: "Unknown action: " + body.action });
     }
   } catch (err) {
@@ -125,6 +126,42 @@ function handleConfig(body) {
     props.setProperty("TAXONOMY_UPDATED_AT", storedTs);
   }
   return jsonResponse({ ok: true, taxonomy: storedJson ? JSON.parse(storedJson) : null, taxonomyUpdatedAt: storedTs });
+}
+
+/* ============================ read the Psych grid (live mirror) ============================ */
+
+// Return the Psych grid's weekly assessments so the app can mirror it:
+// weeks (assessment date keys) + groups (category → behaviors → per-week cell).
+function handlePullGrid(body) {
+  var grid = SpreadsheetApp.getActiveSpreadsheet().getSheetByName((body && body.gridSheet) || GRID_SHEET_NAME);
+  if (!grid) return jsonResponse({ ok: false, error: "Grid sheet not found" });
+  var loc = locateGrid(grid);
+  if (!loc) return jsonResponse({ ok: false, error: "Could not locate the grid layout." });
+
+  var bg = grid.getDataRange().getBackgrounds();
+  var headerVals = loc.values[loc.headerRow] || [];
+  var weeks = [];
+  loc.dateCols.forEach(function (c) {
+    var d = parseGridDate(headerVals[c]);
+    if (d) weeks.push({ col: c, key: d });
+  });
+  weeks.sort(function (a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0); });
+
+  var rowIdxs = Object.keys(loc.rowInfo).map(Number).sort(function (a, b) { return a - b; });
+  var groups = [], curCat = null, curGroup = null;
+  rowIdxs.forEach(function (r) {
+    var info = loc.rowInfo[r];
+    if (info.category !== curCat) { curCat = info.category; curGroup = { category: curCat, behaviors: [] }; groups.push(curGroup); }
+    var cells = {};
+    weeks.forEach(function (w) {
+      var sev = hexToSeverity(bg[r][w.col]);
+      var note = String(loc.values[r][w.col] || "").trim();
+      if (sev || note) cells[w.key] = { severity: sev, note: note };
+    });
+    curGroup.behaviors.push({ behavior: info.behavior, cells: cells });
+  });
+
+  return jsonResponse({ ok: true, weeks: weeks.map(function (w) { return w.key; }), groups: groups });
 }
 
 /* ============================ propagate class edits to the grid ============================ */
